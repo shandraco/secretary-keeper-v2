@@ -1,0 +1,22 @@
+/* Hides what this deployment does not use. Served by the proxy at /static/custom.css (proxy/nginx.conf),
+   so it survives Open WebUI upgrades without rebuilding the image. Most features are already switched
+   off in compose.yaml; this only tidies leftovers. Selectors are checked against OPENWEBUI_TAG in .env:
+   after an upgrade, open the chat and confirm nothing you need has gone (docs/ui.md). Open WebUI's own
+   name and logo are left in place, as its licence requires. */
+
+/* Side bar: workspace, notes, channels, search, folders and the "new folder" control */
+a[href="/workspace"], a[href^="/workspace/"],
+a[href="/notes"], a[href="/channels"], a[href^="/channels/"],
+button[aria-label="Search"], button[aria-label="New Folder"],
+#sidebar-folders { display: none !important; }
+
+/* Message actions nobody here needs: rate, read aloud, regenerate with another model, continue */
+button[aria-label="Good Response"], button[aria-label="Bad Response"],
+button[aria-label="Read Aloud"], button[aria-label="Continue Response"] { display: none !important; }
+
+/* Model picker: there is one assistant, so hide the "add model" and "set as default" controls */
+button[aria-label="Add Model"], button[aria-label="Set as default"] { display: none !important; }
+
+/* Bigger text box and send button for people on small screens or with less steady hands */
+#chat-input { font-size: 1.05rem; }
+button#send-message-button { min-width: 2.75rem; min-height: 2.75rem; }

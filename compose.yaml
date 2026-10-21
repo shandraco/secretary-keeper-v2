@@ -63,17 +63,28 @@ services:
       retries: 20
     restart: unless-stopped
 
-  # Main judge and chat model. Also serves Open WebUI's chat, with tool calling on.
-  judge:
-    <<: *vllm
-    command:
-      - /models/gpt-oss-120b
-      - --served-model-name=judge
-      - --tensor-parallel-size=${JUDGE_TP:-1}
-      - --max-model-len=32768
-      - --gpu-memory-utilization=0.90
-      - --enable-auto-tool-choice
-      - --tool-call-parser=openai
+  # Main model: IBM Granite 4.2 30B, already running on its own vLLM server (GRANITE_URL in .env).
+  # Everything here reaches it through this gateway, the backend network's only way out, which passes
+  # on chat and model-list calls and nothing else. The server's required vLLM flags are in docs/setup.md.
+  granite-gateway:
+    image: nginx:${NGINX_TAG:-1.27-alpine}
+    networks: [backend, llm-egress]
+    environment:
+      GRANITE_URL: ${GRANITE_URL:?set GRANITE_URL in .env, e.g. https://granite.internal:8000}
+      GRANITE_API_KEY: ${GRANITE_API_KEY:-}
+      # A private CA goes in gateway/ (e.g. gateway/granite-ca.pem -> /etc/nginx/granite/granite-ca.pem)
+      GRANITE_CA_PATH: ${GRANITE_CA_PATH:-/etc/ssl/certs/ca-certificates.crt}
+      NGINX_ENVSUBST_FILTER: ^GRANITE_
+    volumes:
+      - ./gateway/granite.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./gateway:/etc/nginx/granite:ro
+    extra_hosts: ["host.docker.internal:host-gateway"]   # for a Granite server on this same machine
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
 
   # Optional: finds references the regex misses during ingest (`--llm-refs`).
   extract:
@@ -116,9 +127,11 @@ services:
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8100}
       ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1,policy-api}
       LLM_API_KEY: ${LLM_API_KEY}
-      # Verdicts only. Point these at judge-tuned to use a fine-tuned judge; chat stays on `judge`.
-      JUDGE_URL: ${JUDGE_URL:-http://judge:8000/v1}
-      JUDGE_MODEL: ${JUDGE_MODEL:-judge}
+      # Verdicts only. Point these at judge-tuned to use a fine-tuned judge; chat stays on Granite.
+      JUDGE_URL: ${JUDGE_URL:-http://granite-gateway:8000/v1}
+      JUDGE_MODEL: ${JUDGE_MODEL:-${GRANITE_MODEL:-granite-4.2-30b}}
+      JUDGE_API_KEY: ${JUDGE_API_KEY:-}   # empty: the gateway adds the Granite key. Set only for a local judge-tuned
+      JUDGE_THINKING: ${JUDGE_THINKING:-0}   # 1 = Granite reasons before each verdict: slower, sometimes better
       ESCALATE_URL: ${ESCALATE_URL:-}
       ESCALATE_MODEL: escalate
       EXTRACT_URL: ${EXTRACT_URL:-}
@@ -147,23 +160,81 @@ services:
       - ./eval:/eval:ro
     depends_on:
       db: {condition: service_healthy}
+      granite-gateway: {condition: service_started}
     restart: unless-stopped
 
+  # Hermes: the assistant. Open WebUI sends each chat here; Hermes decides which tools to call, asks
+  # Granite (through granite-gateway) to think, and sends the answer back. Its only tools are the
+  # policy tools in hermes/plugins/secretary, its to-do list and subagents: no web, files, terminal or
+  # memory (hermes/config.yaml). Settings are mounted read-only.
+  hermes:
+    image: nousresearch/hermes-agent:${HERMES_TAG:?set HERMES_TAG in .env}
+    command: ["gateway", "run"]
+    networks: [backend]
+    environment:
+      API_SERVER_ENABLED: "true"
+      API_SERVER_HOST: 0.0.0.0              # inside the sealed backend network only
+      API_SERVER_PORT: "8642"
+      API_SERVER_KEY: ${HERMES_API_KEY:?set HERMES_API_KEY in .env (16+ characters)}
+      API_SERVER_MODEL_NAME: policy-assistant
+      SECRETARY_API_URL: http://policy-api:8000
+      # Stop waiting for a check after this long and tell the user to ask again; must stay below
+      # Open WebUI's AIOHTTP_CLIENT_TIMEOUT so the answer reaches the chat.
+      SECRETARY_MAX_WAIT_MINUTES: ${SECRETARY_MAX_WAIT_MINUTES:-10}
+      SECRETARY_API_KEY: ${POLICY_API_KEY}
+      HF_HUB_OFFLINE: "1"
+      DO_NOT_TRACK: "1"
+    volumes:
+      - hermes-data:/opt/data
+      - ./hermes/config.yaml:/opt/data/config.yaml:ro
+      - ./hermes/SOUL.md:/opt/data/SOUL.md:ro
+      - ./hermes/plugins/secretary:/opt/data/plugins/secretary:ro
+    depends_on:
+      policy-api: {condition: service_started}
+      granite-gateway: {condition: service_started}
+    restart: unless-stopped
+
+  # The chat screen, trimmed to: ask a question, attach a document, read the answer and open files.
+  # Everything else is switched off here; openwebui/custom.css hides what has no setting (docs/ui.md).
   open-webui:
     image: ghcr.io/open-webui/open-webui:${OPENWEBUI_TAG:?set OPENWEBUI_TAG in .env}
     networks: [backend]
     environment:
       WEBUI_SECRET_KEY: ${OPENWEBUI_SECRET_KEY:?set OPENWEBUI_SECRET_KEY in .env}
       WEBUI_AUTH: "true"
-      ENABLE_SIGNUP: ${OPENWEBUI_ENABLE_SIGNUP:-true}   # set false once the admin account exists
+      ENABLE_SIGNUP: ${OPENWEBUI_ENABLE_SIGNUP:-false}   # true only while creating the first admin account
+      DEFAULT_USER_ROLE: user
+      # Settings here win over anything changed in the admin panel, so the trimmed screen stays trimmed.
+      ENABLE_PERSISTENT_CONFIG: "false"
       ENABLE_OLLAMA_API: "false"
-      OPENAI_API_BASE_URL: http://judge:8000/v1
-      OPENAI_API_KEY: ${LLM_API_KEY}
+      # Chats go to Hermes, which answers as the model "policy-assistant".
+      OPENAI_API_BASE_URL: http://hermes:8642/v1
+      # Hermes may wait on a running check for SECRETARY_MAX_WAIT_MINUTES; give it room.
+      AIOHTTP_CLIENT_TIMEOUT: ${OPENWEBUI_TIMEOUT_SECONDS:-900}
+      OPENAI_API_KEY: ${HERMES_API_KEY}
+      DEFAULT_MODELS: policy-assistant
       OFFLINE_MODE: "true"
       HF_HUB_OFFLINE: "1"
+      # Off: anything that reaches outside, or that this assistant does not use.
       ENABLE_WEB_SEARCH: "false"
-      ENABLE_COMMUNITY_SHARING: "false"
       ENABLE_IMAGE_GENERATION: "false"
+      ENABLE_CODE_INTERPRETER: "false"
+      ENABLE_CODE_EXECUTION: "false"
+      ENABLE_DIRECT_CONNECTIONS: "false"
+      ENABLE_TOOL_SERVERS: "false"
+      ENABLE_COMMUNITY_SHARING: "false"
+      ENABLE_MESSAGE_RATING: "false"
+      ENABLE_EVALUATION_ARENA_MODELS: "false"
+      ENABLE_MEMORIES: "false"
+      ENABLE_NOTES: "false"
+      ENABLE_CHANNELS: "false"
+      ENABLE_FOLDERS: "false"
+      ENABLE_API_KEYS: "false"
+      ENABLE_FOLLOW_UP_GENERATION: "false"
+      ENABLE_TITLE_GENERATION: "false"   # each title would be a full Hermes run
+      ENABLE_TAGS_GENERATION: "false"
+      ENABLE_AUTOCOMPLETE_GENERATION: "false"
+      # Attached documents go to policy-api through the upload filter, not into Open WebUI's own index.
       RAG_EMBEDDING_ENGINE: openai
       RAG_OPENAI_API_BASE_URL: http://embed/v1
       RAG_OPENAI_API_KEY: unused
@@ -185,6 +256,7 @@ services:
       - "${BIND_ADDR:-127.0.0.1}:6900:6900"   # review queue (Argilla), when the review profile runs
     volumes:
       - ./proxy/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./openwebui/custom.css:/etc/nginx/owui/custom.css:ro
     depends_on: [policy-api]
     restart: unless-stopped
 
@@ -332,7 +404,7 @@ services:
       - --gpu-memory-utilization=0.90
 
   # The fine-tuned judge after it passed the evaluation. Only policy-api's verdicts use it (set
-  # JUDGE_URL=http://judge-tuned:8000/v1 and JUDGE_MODEL=judge-tuned in .env); chat stays on `judge`.
+  # JUDGE_URL=http://judge-tuned:8000/v1 and JUDGE_MODEL=judge-tuned in .env); chat stays on Granite.
   judge-tuned:
     <<: *vllm
     profiles: [tuned]
@@ -347,10 +419,14 @@ networks:
   # Everything that touches policy text: models, database, policy-api, Open WebUI. No route out.
   backend:
     internal: true
+  # Only granite-gateway joins this, to reach the Granite server. Your host firewall should allow it
+  # to reach that one address and nothing else (docs/security.md).
+  llm-egress: {}
   # Only the proxy joins this. Your host firewall should still block outbound traffic from it.
   frontend: {}
 
 volumes:
+  hermes-data:
   pgdata:
   exports:
   openwebui:

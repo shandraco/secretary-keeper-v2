@@ -90,8 +90,10 @@ class TEIReranker:
 
 
 class LLMJudge:
-    def __init__(self, base_url: str, api_key: str, model: str) -> None:
+    def __init__(self, base_url: str, api_key: str, model: str, template_kwargs: dict | None = None) -> None:
         self.name = model
+        # Model-specific chat template switches, e.g. {"enable_thinking": False} for Granite 4.2.
+        self.extra = {"chat_template_kwargs": template_kwargs} if template_kwargs else None
         self.client = AsyncOpenAI(base_url=base_url, api_key=api_key or "unused", timeout=180, max_retries=2)
 
     async def assess(self, pair: Pair) -> dict:
@@ -102,6 +104,7 @@ class LLMJudge:
                 messages=messages,
                 temperature=0,
                 response_format={"type": "json_schema", "json_schema": {"name": "impact", "schema": IMPACT_SCHEMA, "strict": True}},
+                extra_body=self.extra,
             )
             try:
                 return clean_verdict(json.loads(r.choices[0].message.content or ""))

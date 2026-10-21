@@ -61,7 +61,8 @@ docker compose --env-file /tmp/test.env down -v
 
 ### Testing the Open WebUI tool without Open WebUI
 
-The tool's logic can be run inside the policy-api container, which has the same libraries:
+This applies to the `main` and `langgraph` versions. On the hermes version the Hermes plugin is tested by
+`policy_api/tests/test_hermes_plugin.py`, which runs in the normal test suite. The tool's logic can be run inside the policy-api container, which has the same libraries:
 
 ```bash
 docker cp openwebui/policy_impact_tool.py secretary-keeper-policy-api-1:/tmp/tool.py
@@ -81,7 +82,7 @@ Each must return a plain instruction for the chat model, never a stack trace.
 
 On the GPU server, after [setup.md](setup.md):
 
-1. From inside the network, `docker compose exec policy-api python3 -c "import httpx,os; print(httpx.get('http://judge:8000/v1/models', headers={'Authorization':'Bearer '+os.environ['LLM_API_KEY']}).json())"` lists `judge`.
+1. From inside the network, `docker compose exec policy-api python3 -c "import httpx; print(httpx.get('http://granite-gateway:8000/v1/models').json())"` lists `granite-4.2-30b` (the gateway adds the key).
 2. Ingest `samples/policies`, upload `samples/changes/POL-007-v4.md` in Open WebUI, and ask about Safety.
 3. Expect SAF-112 and SAF-130 flagged, and SAF-141 and SAF-160 not affected. SAF-150 may be Yes or Maybe.
 4. In `judgements`, every `result` has all six fields, and none has the "could not be read" reason.

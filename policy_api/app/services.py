@@ -58,7 +58,7 @@ async def build_services(settings: Settings) -> Services:
         store,
         TEIEmbedder(settings.embed_url),
         TEIReranker(settings.rerank_url),
-        LLMJudge(settings.judge_url, key, settings.judge_model),
+        LLMJudge(settings.judge_url, settings.judge_api_key, settings.judge_model, {"enable_thinking": settings.judge_thinking}),
         LLMJudge(settings.escalate_url, key, settings.escalate_model) if settings.escalate_url else None,
         LLMExtractor(settings.extract_url, key, settings.extract_model, settings.policy_id_pattern) if settings.extract_url else None,
         review,

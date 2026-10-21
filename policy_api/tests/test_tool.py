@@ -25,6 +25,7 @@ def tool(samples, tmp_path, monkeypatch):
     t = mod.Tools()
     t.valves.API_KEY = "demo"
     t.valves.POLL_SECONDS = 0.05
+    t.valves.UPLOAD_DIR = str(tmp_path)
     with TestClient(app):  # runs startup: services and the queue worker
         t._client = lambda: httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://policy-api",
                                               headers={"Authorization": "Bearer demo"}, timeout=60)
@@ -65,3 +66,21 @@ def test_make_document_and_label_escaping(tool):
     assert "not valid JSON" in asyncio.run(tool.make_document("{nope", "pdf"))
     bad = asyncio.run(tool.make_document(json.dumps({"title": "t", "sections": [{"chart": {"type": "radar"}}]}), "png"))
     assert bad.startswith("The content could not be used")
+
+
+def test_check_with_upload_id_from_the_filter(tool, samples):
+    async def upload():
+        async with tool._client() as c:
+            data = (samples / "changes" / "POL-007-v4.md").read_bytes()
+            return (await c.post("/uploads", files={"file": ("POL-007-v4.md", data)})).json()["upload_id"]
+
+    upload_id = asyncio.run(upload())
+    asked = asyncio.run(tool.check_policy_change("safety", upload_id=upload_id))
+    assert asked.startswith("Ask the user which policy")
+    out = asyncio.run(tool.check_policy_change("safety", "POL-007", upload_id=upload_id))
+    assert "2 of the 5 Safety policies need updating" in out
+
+
+def test_attachment_outside_the_upload_folder_is_ignored(tool, samples):
+    outside = [{"name": "x.md", "file": {"path": str(samples / "changes" / "POL-007-v4.md")}}]
+    assert tool._attached_file(outside) is None

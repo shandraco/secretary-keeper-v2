@@ -21,6 +21,8 @@ class Settings:
     llm_api_key: str
     judge_url: str
     judge_model: str
+    judge_api_key: str
+    judge_thinking: bool
     escalate_url: str
     escalate_model: str
     extract_url: str
@@ -56,8 +58,10 @@ def load_settings() -> Settings:
         allowed_hosts=tuple(h.strip() for h in _get("ALLOWED_HOSTS", "localhost,127.0.0.1,policy-api,testserver").split(",") if h.strip()),
         export_dir=_get("EXPORT_DIR", "./exports"),
         llm_api_key=_get("LLM_API_KEY"),
-        judge_url=_get("JUDGE_URL", "http://judge:8000/v1"),
-        judge_model=_get("JUDGE_MODEL", "judge"),
+        judge_url=_get("JUDGE_URL", "http://granite-gateway:8000/v1"),
+        judge_model=_get("JUDGE_MODEL", "granite-4.2-30b"),
+        judge_api_key=_get("JUDGE_API_KEY"),  # empty for Granite: granite-gateway adds its key
+        judge_thinking=_get("JUDGE_THINKING", "0").lower() in ("1", "true", "yes"),
         escalate_url=_get("ESCALATE_URL"),
         escalate_model=_get("ESCALATE_MODEL", "escalate"),
         extract_url=_get("EXTRACT_URL"),

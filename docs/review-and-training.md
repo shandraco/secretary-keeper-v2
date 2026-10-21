@@ -135,8 +135,7 @@ policy-api talks to Argilla directly on the backend network, never through the p
 
 ### Train
 
-All commands run from the repo root. The GPUs must be free: stop `judge` first if it holds them,
-and give `lora-trainer` (and later `judge-candidate`) GPUs in `compose.gpu.yaml`, like the others:
+All commands run from the repo root. Granite runs on its own server, so the GPUs here only need to hold the training job: give `lora-trainer` (and later `judge-candidate`) GPUs in `compose.gpu.yaml`, like the others:
 
 ```
   lora-trainer:
@@ -176,7 +175,7 @@ python3 training/compare_eval.py training/out/base.json training/out/candidate.j
 3. If `compare_eval.py` prints `RESULT: the new model is better` (exit code 0), switch.
 
 **Switch.** The tuned model gets its own service, `judge-tuned`. Only the policy checks' verdicts
-move to it; the chat in Open WebUI stays on the original `judge`, so a model trained only to give
+move to it; the chat in Open WebUI stays on Granite, so a model trained only to give
 verdicts never has to hold a conversation.
 
 ```
@@ -203,11 +202,14 @@ Run one real check from Open WebUI. Every verdict records the model that gave it
 **Roll back** (seconds, no model reload): delete or comment out the `JUDGE_URL` and `JUDGE_MODEL`
 lines in `.env`, then `docker compose up -d policy-api`. Stop `judge-tuned` when you no longer need it.
 
-If the GPUs can't hold both `judge` and `judge-tuned`, keep the tuned model as the candidate until
-they can; don't replace `judge` itself.
+The Granite server is never replaced; the tuned model only takes over the verdicts.
 
 ### Known limits
 
+- The judge is now Granite 4.2 30B, but these scripts still fine-tune gpt-oss-20b. A tuned
+  gpt-oss-20b can still be tried as `judge-candidate` and must beat Granite on the test cases to
+  replace it. Tuning Granite itself needs `train_lora.py` changed for a dense bf16 model (no
+  `Mxfp4Config`, LoRA on attention and MLP layers) and is not done yet.
 - vLLM cannot apply LoRA to gpt-oss mixture-of-experts layers, so training is attention-only by
   default and the adapter is always merged into a normal model folder before serving.
 - The merged model is bf16: about 42 GB for 20b and about 240 GB for 120b, so `judge-candidate`

@@ -1,4 +1,4 @@
-"""The four handbook diagrams, drawn as inline SVG. They use the page's fonts and the classes in style.css."""
+"""The handbook diagrams, drawn as inline SVG. They use the page's fonts and the classes in style.css."""
 from __future__ import annotations
 
 from html import escape
@@ -39,7 +39,7 @@ def system() -> str:
     n = "sys"
     b = [
         '<rect class="band-back" x="8" y="108" width="664" height="284" rx="4"/>',
-        _text(22, 128, "backend network: sealed, no route out", "d-band"),
+        _text(22, 128, "backend network: sealed, one way out", "d-band"),
         _box(20, 24, 130, 48, "Staff", "in a web browser"),
         _box(220, 24, 130, 48, "proxy", "nginx, the only way in", cls="box door"),
         _line("M150,48 H218", n),
@@ -49,32 +49,35 @@ def system() -> str:
         _line("M350,40 H505 V148", n), _text(362, 33, "Excel and report downloads only"),
         _line("M350,175 H428", n), _text(389, 168, "tool call", anchor="middle"),
         # the chat model answers in Open WebUI; the pipeline calls the models and the database
-        _line("M240,200 V222 H60 V260", n), _text(150, 216, "chat answers", anchor="middle"),
+        _line("M240,200 V222 H80 V260", n), _text(150, 216, "chat answers", anchor="middle"),
         _line("M505,200 V238 H100", n, arrow=False), _text(514, 230, "pipeline calls"),
     ]
     for x in (100, 208, 336, 464, 592):
         b.append(_line(f"M{x},238 V260", n))
     b += [
-        _box(20, 262, 120, 52, "judge", "gpt-oss-120b"),
+        _box(20, 262, 120, 52, "granite-gateway", "nginx, the one way out"),
         _box(148, 262, 120, 52, "escalate", "Inkling-Small", cls="box opt"),
         _box(276, 262, 120, 52, "extract", "gpt-oss-20b", cls="box opt"),
         _box(404, 262, 120, 52, "embed + rerank", "TEI"),
         _box(532, 262, 120, 52, "db", "Postgres + pgvector"),
         _box(532, 336, 120, 44, "Argilla", "review queue", cls="box opt"),
         _line("M580,175 H664 V358 H654", n), _text(598, 168, "review sync"),
-        '<rect class="box door" x="22" y="344" width="16" height="12" rx="2"/>',
-        _text(46, 354, "The only container people can reach"),
-        '<rect class="box opt" x="22" y="364" width="16" height="12" rx="2"/>',
-        _text(46, 374, "Optional, started with a Compose profile"),
+        _line("M80,314 V410", n, cls="d-line dash"), _text(88, 362, "GRANITE_URL only"),
+        _box(20, 412, 120, 40, "Granite 4.2 30B", "your own vLLM server", cls="box cloud"),
+        _text(150, 436, "Runs outside this stack; reached only through the gateway"),
+        '<rect class="box door" x="180" y="344" width="16" height="12" rx="2"/>',
+        _text(204, 354, "The only container people can reach"),
+        '<rect class="box opt" x="180" y="364" width="16" height="12" rx="2"/>',
+        _text(204, 374, "Optional, started with a Compose profile"),
     ]
-    return _svg(n, 680, 400, b, "System architecture: staff reach only the proxy; all services sit on a sealed backend network")
+    return _svg(n, 680, 460, b, "System architecture: staff reach only the proxy; all services sit on a sealed backend network whose one way out is granite-gateway")
 
 
 PIPELINE = [
     ("Resolve", "Finds the policy group (“Safety”) and the head policy (POL-007 or an upload)", "policy-api + db"),
     ("Diff", "Compares old and new versions section by section, including defined terms", "policy-api"),
     ("Find related sections", "For each changed section, collects sections in the group from three sources", "embed + rerank"),
-    ("Judge", "Reads each pair; answers yes, no or unsure, with a reason, quotes and an edit", "judge: gpt-oss-120b"),
+    ("Judge", "Reads each pair; answers yes, no or unsure, with a reason, quotes and an edit", "Granite 4.2 30B"),
     ("Escalate (optional)", "Sends “unsure” pairs to a larger model for a second opinion", "escalate: Inkling-Small"),
     ("Summarise", "Yes if any section says yes, Maybe if any is unsure, otherwise not affected", "policy-api"),
     ("Report", "Builds the chat answer and the Excel workbook in code, from the same result", "policy-api"),
@@ -112,36 +115,42 @@ def containment() -> str:
         '<rect class="band-front" x="300" y="12" width="210" height="88" rx="4"/>',
         _text(312, 30, "frontend network", "d-band"),
         '<rect class="band-back" x="16" y="140" width="494" height="206" rx="4"/>',
-        _text(28, 160, "backend network: internal: true, no gateway out", "d-band"),
+        _text(28, 160, "backend network: internal: true, one way out", "d-band"),
         _box(16, 38, 100, 44, "Users", "web browsers"),
         _box(140, 38, 136, 44, "Your reverse proxy", "TLS and your hostname"),
         _box(372, 40, 120, 44, "proxy", "holds no data", cls="box door"),
         _line("M116,60 H138", n), _line("M276,62 H370", n),
         _line("M432,84 V174", n), _text(424, 118, "Open WebUI,", anchor="end"), _text(424, 131, "downloads, /health", anchor="end"),
     ]
-    grid = [("judge", ""), ("embed", ""), ("rerank", ""), ("open-webui", ""),
+    grid = [("embed", ""), ("rerank", ""), ("open-webui", ""), ("hermes", ""),
             ("escalate", "opt"), ("extract", "opt"), ("db", ""), ("policy-api", ""),
             ("argilla", "opt"), ("lora-trainer", "opt"), ("judge-tuned", "opt")]
     for k, (name, opt) in enumerate(grid):
         x, y = 32 + (k % 4) * 116, 176 + (k // 4) * 56
         b.append(_box(x, y, 104, 38, name, cls="box opt" if opt else "box"))
     b += [
+        _box(380, 288, 104, 38, "granite-gateway", cls="box door"),
+        _line("M484,307 H572", n),
+        _box(574, 285, 96, 44, "Granite server", "your vLLM", cls="box cloud"),
+        _text(622, 343, "chat + models only", anchor="middle"),
+    ]
+    b += [
         '<rect class="wall" x="530" y="12" width="12" height="334"/>',
         f'<text class="d-band" transform="translate(524,110) rotate(-90)" text-anchor="middle">host firewall</text>',
-        '<rect class="box cloud" x="574" y="196" width="96" height="56" rx="26"/>',
-        _text(622, 229, "Internet", "d-title", "middle"),
-        _line("M510,224 H572", n, cls="d-line blocked"),
-        f'<path class="x" d="M528,216 L544,232 M544,216 L528,232"/>',
-        _text(574, 278, "Blocked twice: the"), _text(574, 291, "network has no"),
-        _text(574, 304, "gateway, and the host"), _text(574, 317, "firewall drops it"),
+        '<rect class="box cloud" x="574" y="150" width="96" height="56" rx="26"/>',
+        _text(622, 183, "Internet", "d-title", "middle"),
+        _line("M510,178 H572", n, cls="d-line blocked"),
+        f'<path class="x" d="M528,170 L544,186 M544,170 L528,186"/>',
+        _text(574, 222, "Blocked twice: the"), _text(574, 235, "gateway only reaches"),
+        _text(574, 248, "Granite, and the host"), _text(574, 261, "firewall drops the rest"),
     ]
-    return _svg(n, 680, 356, b, "Network containment: only the proxy is reachable, and nothing on the backend can reach the internet")
+    return _svg(n, 680, 356, b, "Network containment: only the proxy is reachable, and the backend reaches only your Granite server, through granite-gateway")
 
 
 def loop() -> str:
     n = "loop"
     b = [
-        _box(20, 20, 170, 60, "Policy checks", "the judge gives each pair", "a verdict"),
+        _box(20, 20, 170, 60, "Policy checks", "Granite gives each pair", "a verdict"),
         _box(255, 20, 170, 60, "Review queue", "every yes and maybe, 1 in 10 no;", "people confirm or correct"),
         _box(490, 20, 170, 60, "Policy database", "answers copied back", "every 5 minutes"),
         _box(490, 160, 170, 60, "Export dataset", "needs 200 or more", "reviewed answers"),
@@ -159,10 +168,86 @@ def loop() -> str:
     return _svg(n, 680, 380, b, "Review and training loop: a new judge replaces the old one only if it scores better")
 
 
+def _badge(x, y, n, mid_cls="step"):
+    return f'<circle class="{mid_cls}" cx="{x}" cy="{y}" r="10"/>' + _text(x, y + 4.5, str(n), "d-num", "middle")
+
+
+def hermes_flow() -> str:
+    n = "hflow"
+    b = [
+        '<rect class="band-front" x="8" y="8" width="664" height="64" rx="4"/>',
+        _text(664, 24, "frontend network", "d-band", "end"),
+        '<rect class="band-back" x="8" y="88" width="664" height="256" rx="4"/>',
+        _text(22, 338, "backend network: sealed, one way out", "d-band"),
+        '<rect class="band-front" x="300" y="312" width="210" height="100" rx="4"/>',
+        _text(308, 382, "llm-egress network", "d-band"),
+        _box(20, 26, 100, 40, "Staff", "web browser"),
+        _box(150, 26, 100, 40, "proxy", "nginx", cls="box door"),
+        _line("M120,46 H148", n),
+        _box(150, 138, 100, 54, "Open WebUI", "chat screen,", "upload filter"),
+        _line("M200,66 V136", n),
+        # Hermes, with the plugin inside it
+        '<rect class="box" x="310" y="134" width="170" height="140" rx="3"/>',
+        _text(395, 154, "Hermes Agent", "d-title", "middle"),
+        _text(395, 169, "API server on port 8642", "d-sub", "middle"),
+        _text(395, 182, "decides which tool to call", "d-sub", "middle"),
+        _box(322, 196, 146, 50, "secretary plugin", "9 policy tools,", "no web, files or terminal", cls="box small"),
+        _box(500, 134, 160, 96, "policy-api", "FastAPI, job queue,", "fixed check pipeline"),
+        _box(500, 262, 76, 46, "db", "Postgres", "+ pgvector"),
+        _box(584, 262, 76, 46, "embed", "+ rerank", "(TEI)"),
+        _line("M538,230 V260", n), _line("M622,230 V260", n),
+        _line("M250,165 H308", n),
+        _line("M468,205 H498", n),
+        _line("M380,274 V320", n),
+        _line("M500,226 H490 V342 H482", n),
+        _line("M230,138 V118 H600 V132", n, cls="d-line dash"),
+        _box(330, 322, 150, 40, "granite-gateway", "backend + llm-egress", cls="box door"),
+        _line("M450,362 V428", n, cls="d-line dash"), _text(458, 400, "chat + model list only"),
+        _box(330, 430, 150, 40, "Granite 4.2 30B", "your own vLLM server", cls="box cloud"),
+        _badge(135, 29, 1), _badge(216, 102, 2), _badge(279, 150, 3), _badge(394, 298, 4),
+        _badge(487, 188, 5), _badge(490, 284, 6), _badge(420, 118, 7),
+    ]
+    legend = ["Staff reach only the proxy", "The proxy passes the chat to Open WebUI",
+              "Open WebUI sends the chat to Hermes", "Hermes asks Granite what to do next",
+              "The plugin calls policy-api", "policy-api asks Granite for verdicts",
+              "Attached files go straight to policy-api"]
+    for i, t in enumerate(legend):
+        y = 228 + i * 15
+        b += [f'<circle class="step" cx="30" cy="{y}" r="6.5"/>', _text(30, y + 3, str(i + 1), "d-sub-ink", "middle"), _text(44, y + 3.5, t, "d-sub")]
+    return _svg(n, 680, 484, b, "Request path: Open WebUI to Hermes to the plugin to policy-api, with Hermes and policy-api reaching Granite only through granite-gateway")
+
+
+def hermes_loop() -> str:
+    n = "hloop"
+    cols = {"ow": 70, "he": 208, "gr": 346, "pl": 484, "pa": 614}
+    heads = [("ow", "Open WebUI", "chat screen"), ("he", "Hermes", "the agent"), ("gr", "Granite 4.2 30B", "via granite-gateway"),
+             ("pl", "secretary plugin", "inside Hermes"), ("pa", "policy-api", "pipeline and jobs")]
+    msgs = [("ow", "he", "question + upload id", False), ("he", "gr", "history + tool list", False),
+            ("gr", "he", "calls check_policy_change", True), ("he", "pl", "run the tool with these arguments", False),
+            ("pl", "pa", "POST /runs", False), ("pa", "pl", "202: run id, job queued", True),
+            ("pl", "pa", "GET /runs/id, every 3 s", False), ("pa", "pl", "done: answer + Excel link", True),
+            ("pl", "he", "tool result, as text", True), ("he", "gr", "result added to the chat", False),
+            ("gr", "he", "writes the final answer", True), ("he", "ow", "answer sent back to the chat", True)]
+    ys = [84] + [130 + 30 * i for i in range(10)] + [452]
+    b = [f'<rect class="band-back" x="150" y="{ys[1] - 36}" width="516" height="{ys[10] - ys[1] + 48}" rx="4"/>']
+    for k, x in cols.items():
+        b.append(f'<path class="d-spine" d="M{x},50 V470"/>')
+    b.append(_text(158, ys[1] - 22, "Repeats until Granite answers in words, at most 30 rounds (max_turns)", "d-band"))
+    for k, name, sub in heads:
+        b.append(_box(cols[k] - 58, 12, 116, 38, name, sub))
+    for (a, c, label, ret), y in zip(msgs, ys):
+        x1, x2 = cols[a], cols[c]
+        b.append(_line(f"M{x1},{y} H{x2 + (-3 if x2 < x1 else 3)}", n, cls="d-line dash" if ret else "d-line"))
+        b.append(_text((x1 + x2) / 2, y - 5, label, "d-sub-ink", "middle"))
+    return _svg(n, 680, 480, b, "The agent loop: Hermes asks Granite, Granite proposes a tool call, the plugin runs it against policy-api, and the result goes back to Granite until it writes the answer")
+
+
 FIGURES = {
     "system": (system, "What runs where. People reach only the proxy; every service that holds policy text is on a sealed network."),
     "pipeline": (pipeline, "How one question is answered. Code makes every decision; the judge rules on one pair at a time."),
-    "containment": (containment, "Two barriers keep policy text in: a network with no gateway, and your host firewall."),
+    "containment": (containment, "Two barriers keep policy text in: a network with one narrow way out, and your host firewall."),
+    "hermes-flow": (hermes_flow, "The request path. People reach only the proxy; Hermes and policy-api reach Granite only through the gateway."),
+    "hermes-loop": (hermes_loop, "One question, step by step. Granite proposes tool calls; the plugin runs them against policy-api; code makes every decision."),
     "loop": (loop, "The review and training loop. A new judge replaces the old one only if it scores better."),
 }
 

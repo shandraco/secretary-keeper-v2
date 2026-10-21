@@ -17,6 +17,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .answer import render_answer
 from .config import load_settings
+from .documents import split_clauses
 from .safe_parse import ParseTimeout, parse_isolated
 from .excel import build_workbook
 from .reports.charts import change_matrix_png, impact_types_png, status_by_policy_png
@@ -123,6 +124,63 @@ async def policies(request: Request, q: str = Query(min_length=1, max_length=200
     items = [{**p, "score": _score(q, p["id"], p["title"])} for p in await svc_of(request).store.all_policies()]
     items = [p for p in sorted(items, key=lambda p: -p["score"]) if p["score"] >= 0.4][:limit]
     return {"policies": items}
+
+
+SEARCH_TEXT_CHARS = 1500
+READ_TEXT_CHARS = 20000
+
+
+@app.get("/search", dependencies=AUTH)
+async def search(request: Request, q: str = Query(min_length=2, max_length=500), group: str = Query("", max_length=200),
+                 policy: str = Query("", max_length=100), limit: int = Query(8, ge=1, le=20)) -> dict:
+    """Sections of stored policies that best answer a question: embeddings narrow, the reranker orders.
+    The assistant answers only from what this returns, and cites policy and section."""
+    svc = svc_of(request)
+    if policy:
+        if policy not in await svc.store.get_policies([policy]):
+            raise HTTPException(404, f"There is no policy called {policy}.")
+        ids = [policy]
+    elif group:
+        names = {s["name"].lower(): s["name"] for s in await svc.store.list_subsets()}
+        if group.lower() not in names:
+            raise HTTPException(404, f"There is no policy group called {group}.")
+        ids = await svc.store.subset_policy_ids(names[group.lower()])
+    else:
+        ids = [p["id"] for p in await svc.store.all_policies()]
+    [vector] = await svc.embedder.embed([q])
+    rows = await svc.store.nearest(vector, ids, max(30, limit * 3))
+    if not rows:
+        return {"results": []}
+    scores = await svc.reranker.rerank(q, [r.text for r in rows])
+    metas = await svc.store.get_policies(list({r.policy_id for r in rows}))
+    ranked = sorted(zip(scores, rows), key=lambda t: -t[0])[:limit]
+    return {"results": [{
+        "policy_id": r.policy_id, "policy_title": metas[r.policy_id]["title"], "clause": r.number,
+        "heading": r.heading, "text": r.body[:SEARCH_TEXT_CHARS], "score": round(float(s), 3),
+    } for s, r in ranked]}
+
+
+@app.get("/policies/{policy_id}/text", dependencies=AUTH)
+async def policy_text(request: Request, policy_id: str, version: int | None = Query(None, ge=1),
+                      clause: str = Query("", max_length=50)) -> dict:
+    """A stored policy's wording: the whole policy, or one section with its subsections."""
+    svc = svc_of(request)
+    pol = (await svc.store.get_policies([policy_id])).get(policy_id)
+    if not pol:
+        raise HTTPException(404, f"There is no policy called {policy_id}.")
+    versions = dict(await svc.store.latest_versions(policy_id, 1000))
+    v = version or max(versions)
+    if v not in versions:
+        raise HTTPException(404, f"{policy_id} has no version {v}. Stored versions: {', '.join(map(str, sorted(versions)))}.")
+    body = versions[v]
+    if clause:
+        c = clause.strip().lstrip("§").strip()
+        parts = [x for x in split_clauses(body) if x.number == c or x.number.startswith(c + ".")]
+        if not parts:
+            raise HTTPException(404, f"{policy_id} version {v} has no section {c}.")
+        body = "\n\n".join(f"§{x.number} {x.text}" for x in parts)
+    return {"policy_id": policy_id, "title": pol["title"], "version": v, "versions": sorted(versions),
+            "clause": clause or None, "text": body[:READ_TEXT_CHARS], "truncated": len(body) > READ_TEXT_CHARS}
 
 
 @app.post("/uploads", dependencies=AUTH)
