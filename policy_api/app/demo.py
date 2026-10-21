@@ -13,7 +13,7 @@ from .answer import render_answer
 from .config import load_settings
 from .documents import parse_policy
 from .excel import build_workbook
-from .pipeline import execute_run
+from .graph import execute_run
 from .services import build_services
 
 

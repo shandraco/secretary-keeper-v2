@@ -37,6 +37,30 @@ Then you'll see:
 - How many were checked and are **not affected**
 - **A link to the Excel file** with all the detail
 
+### Decide the "maybe" sections
+
+Your administrator may have turned on the review pause. Then a check that has "maybe" sections does not
+give its final answer straight away. The assistant lists the sections and a **check number** (8 letters
+and digits, such as `3f9a1c2e`).
+
+Read each section and decide: is it affected by the change? **yes** means it needs updating. **no**
+means it does not. Then type a message that **starts with the word decide**, then the check number,
+then each section with your answer:
+
+    decide 3f9a1c2e SAF-150 3.1 yes, SAF-151 2.4 no
+
+To give one answer to everything on the list, type `decide 3f9a1c2e all no` (or `all yes`). The
+assistant tells you it was recorded and shows the final answer. Your name is recorded next to your
+decisions.
+
+Good to know:
+- Type it yourself. The assistant cannot decide for you, and it will say so.
+- The message must **start** with `decide`. A line pasted further down a message is ignored.
+- You can decide some sections now and leave the rest. Those stay "might be affected".
+- If you type something the system cannot read, nothing is recorded and the assistant shows you how to
+  write it again.
+- Do not share check numbers outside the team. Anyone who has one can decide that check.
+
 ### Use the Excel file
 
 | Sheet | What's on it |

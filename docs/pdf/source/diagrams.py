@@ -1,4 +1,4 @@
-"""The four handbook diagrams, drawn as inline SVG. They use the page's fonts and the classes in style.css."""
+"""The handbook diagrams, drawn as inline SVG. They use the page's fonts and the classes in style.css."""
 from __future__ import annotations
 
 from html import escape
@@ -39,7 +39,7 @@ def system() -> str:
     n = "sys"
     b = [
         '<rect class="band-back" x="8" y="108" width="664" height="284" rx="4"/>',
-        _text(22, 128, "backend network: sealed, no route out", "d-band"),
+        _text(22, 128, "backend network: sealed, one way out", "d-band"),
         _box(20, 24, 130, 48, "Staff", "in a web browser"),
         _box(220, 24, 130, 48, "proxy", "nginx, the only way in", cls="box door"),
         _line("M150,48 H218", n),
@@ -49,32 +49,35 @@ def system() -> str:
         _line("M350,40 H505 V148", n), _text(362, 33, "Excel and report downloads only"),
         _line("M350,175 H428", n), _text(389, 168, "tool call", anchor="middle"),
         # the chat model answers in Open WebUI; the pipeline calls the models and the database
-        _line("M240,200 V222 H60 V260", n), _text(150, 216, "chat answers", anchor="middle"),
+        _line("M240,200 V222 H80 V260", n), _text(150, 216, "chat answers", anchor="middle"),
         _line("M505,200 V238 H100", n, arrow=False), _text(514, 230, "pipeline calls"),
     ]
     for x in (100, 208, 336, 464, 592):
         b.append(_line(f"M{x},238 V260", n))
     b += [
-        _box(20, 262, 120, 52, "judge", "gpt-oss-120b"),
+        _box(20, 262, 120, 52, "granite-gateway", "nginx, the one way out"),
         _box(148, 262, 120, 52, "escalate", "Inkling-Small", cls="box opt"),
         _box(276, 262, 120, 52, "extract", "gpt-oss-20b", cls="box opt"),
         _box(404, 262, 120, 52, "embed + rerank", "TEI"),
         _box(532, 262, 120, 52, "db", "Postgres + pgvector"),
         _box(532, 336, 120, 44, "Argilla", "review queue", cls="box opt"),
         _line("M580,175 H664 V358 H654", n), _text(598, 168, "review sync"),
-        '<rect class="box door" x="22" y="344" width="16" height="12" rx="2"/>',
-        _text(46, 354, "The only container people can reach"),
-        '<rect class="box opt" x="22" y="364" width="16" height="12" rx="2"/>',
-        _text(46, 374, "Optional, started with a Compose profile"),
+        _line("M80,314 V410", n, cls="d-line dash"), _text(88, 362, "GRANITE_URL only"),
+        _box(20, 412, 120, 40, "Granite 4.2 30B", "your own vLLM server", cls="box cloud"),
+        _text(150, 436, "Runs outside this stack; reached only through the gateway"),
+        '<rect class="box door" x="180" y="344" width="16" height="12" rx="2"/>',
+        _text(204, 354, "The only container people can reach"),
+        '<rect class="box opt" x="180" y="364" width="16" height="12" rx="2"/>',
+        _text(204, 374, "Optional, started with a Compose profile"),
     ]
-    return _svg(n, 680, 400, b, "System architecture: staff reach only the proxy; all services sit on a sealed backend network")
+    return _svg(n, 680, 460, b, "System architecture: staff reach only the proxy; all services sit on a sealed backend network whose one way out is granite-gateway")
 
 
 PIPELINE = [
     ("Resolve", "Finds the policy group (“Safety”) and the head policy (POL-007 or an upload)", "policy-api + db"),
     ("Diff", "Compares old and new versions section by section, including defined terms", "policy-api"),
     ("Find related sections", "For each changed section, collects sections in the group from three sources", "embed + rerank"),
-    ("Judge", "Reads each pair; answers yes, no or unsure, with a reason, quotes and an edit", "judge: gpt-oss-120b"),
+    ("Judge", "Reads each pair; answers yes, no or unsure, with a reason, quotes and an edit", "Granite 4.2 30B"),
     ("Escalate (optional)", "Sends “unsure” pairs to a larger model for a second opinion", "escalate: Inkling-Small"),
     ("Summarise", "Yes if any section says yes, Maybe if any is unsure, otherwise not affected", "policy-api"),
     ("Report", "Builds the chat answer and the Excel workbook in code, from the same result", "policy-api"),
@@ -112,36 +115,42 @@ def containment() -> str:
         '<rect class="band-front" x="300" y="12" width="210" height="88" rx="4"/>',
         _text(312, 30, "frontend network", "d-band"),
         '<rect class="band-back" x="16" y="140" width="494" height="206" rx="4"/>',
-        _text(28, 160, "backend network: internal: true, no gateway out", "d-band"),
+        _text(28, 160, "backend network: internal: true, one way out", "d-band"),
         _box(16, 38, 100, 44, "Users", "web browsers"),
         _box(140, 38, 136, 44, "Your reverse proxy", "TLS and your hostname"),
         _box(372, 40, 120, 44, "proxy", "holds no data", cls="box door"),
         _line("M116,60 H138", n), _line("M276,62 H370", n),
         _line("M432,84 V174", n), _text(424, 118, "Open WebUI,", anchor="end"), _text(424, 131, "downloads, /health", anchor="end"),
     ]
-    grid = [("judge", ""), ("embed", ""), ("rerank", ""), ("open-webui", ""),
+    grid = [("embed", ""), ("rerank", ""), ("open-webui", ""),
             ("escalate", "opt"), ("extract", "opt"), ("db", ""), ("policy-api", ""),
             ("argilla", "opt"), ("lora-trainer", "opt"), ("judge-tuned", "opt")]
     for k, (name, opt) in enumerate(grid):
         x, y = 32 + (k % 4) * 116, 176 + (k // 4) * 56
         b.append(_box(x, y, 104, 38, name, cls="box opt" if opt else "box"))
     b += [
+        _box(380, 288, 104, 38, "granite-gateway", cls="box door"),
+        _line("M484,307 H572", n),
+        _box(574, 285, 96, 44, "Granite server", "your vLLM", cls="box cloud"),
+        _text(622, 343, "chat + models only", anchor="middle"),
+    ]
+    b += [
         '<rect class="wall" x="530" y="12" width="12" height="334"/>',
         f'<text class="d-band" transform="translate(524,110) rotate(-90)" text-anchor="middle">host firewall</text>',
-        '<rect class="box cloud" x="574" y="196" width="96" height="56" rx="26"/>',
-        _text(622, 229, "Internet", "d-title", "middle"),
-        _line("M510,224 H572", n, cls="d-line blocked"),
-        f'<path class="x" d="M528,216 L544,232 M544,216 L528,232"/>',
-        _text(574, 278, "Blocked twice: the"), _text(574, 291, "network has no"),
-        _text(574, 304, "gateway, and the host"), _text(574, 317, "firewall drops it"),
+        '<rect class="box cloud" x="574" y="150" width="96" height="56" rx="26"/>',
+        _text(622, 183, "Internet", "d-title", "middle"),
+        _line("M510,178 H572", n, cls="d-line blocked"),
+        f'<path class="x" d="M528,170 L544,186 M544,170 L528,186"/>',
+        _text(574, 222, "Blocked twice: the"), _text(574, 235, "gateway only reaches"),
+        _text(574, 248, "Granite, and the host"), _text(574, 261, "firewall drops the rest"),
     ]
-    return _svg(n, 680, 356, b, "Network containment: only the proxy is reachable, and nothing on the backend can reach the internet")
+    return _svg(n, 680, 356, b, "Network containment: only the proxy is reachable, and the backend reaches only your Granite server, through granite-gateway")
 
 
 def loop() -> str:
     n = "loop"
     b = [
-        _box(20, 20, 170, 60, "Policy checks", "the judge gives each pair", "a verdict"),
+        _box(20, 20, 170, 60, "Policy checks", "Granite gives each pair", "a verdict"),
         _box(255, 20, 170, 60, "Review queue", "every yes and maybe, 1 in 10 no;", "people confirm or correct"),
         _box(490, 20, 170, 60, "Policy database", "answers copied back", "every 5 minutes"),
         _box(490, 160, 170, 60, "Export dataset", "needs 200 or more", "reviewed answers"),
@@ -159,10 +168,118 @@ def loop() -> str:
     return _svg(n, 680, 380, b, "Review and training loop: a new judge replaces the old one only if it scores better")
 
 
+def _badge(x, y, n, mid_cls="step"):
+    return f'<circle class="{mid_cls}" cx="{x}" cy="{y}" r="10"/>' + _text(x, y + 4.5, str(n), "d-num", "middle")
+
+
+def langgraph_flow() -> str:
+    n = "lgflow"
+    b = [
+        '<rect class="band-front" x="8" y="8" width="664" height="64" rx="4"/>',
+        _text(664, 24, "frontend network", "d-band", "end"),
+        '<rect class="band-back" x="8" y="88" width="664" height="288" rx="4"/>',
+        _text(22, 368, "backend network: sealed, no route out", "d-band"),
+        '<rect class="band-front" x="490" y="338" width="182" height="60" rx="4"/>',
+        _text(498, 392, "llm-egress network", "d-band"),
+        _box(20, 26, 100, 40, "Staff", "web browser"),
+        _box(150, 26, 100, 40, "proxy", "nginx", cls="box door"),
+        _line("M120,46 H148", n),
+        # Open WebUI, with the tool and the filter inside it
+        '<rect class="box small" x="20" y="108" width="190" height="112" rx="3"/>',
+        _text(115, 126, "Open WebUI", "d-title", "middle"),
+        _box(32, 138, 166, 34, "policy tool", "policy_impact_tool.py", cls="box"),
+        _box(32, 178, 166, 34, "upload filter", "global; reads typed decisions", cls="box"),
+        _line("M198,66 V106", n),
+        # policy-api, with the API, the worker and the graph inside it
+        '<rect class="box small" x="248" y="108" width="412" height="146" rx="3"/>',
+        _text(260, 126, "policy-api", "d-title"),
+        _text(648, 126, "one container", "d-sub", "end"),
+        _box(262, 146, 84, 54, "HTTP API", "FastAPI,", "job queue"),
+        _box(388, 146, 84, 54, "job worker", "lease,", "retries"),
+        _box(514, 146, 134, 54, "LangGraph graph", "7 steps, one run", "checkpoint after each"),
+        _line("M198,160 H260", n), _line("M198,194 H260", n),
+        _line("M346,173 H386", n), _line("M472,173 H512", n),
+        _text(272, 224, "POST /runs, GET /runs/{id},", "d-sub"), _text(272, 237, "POST /runs/{id}/review", "d-sub"),
+        # what the graph reaches
+        _line("M581,200 V270", n), _line("M581,270 H190", n, arrow=False),
+        _line("M190,270 V284", n), _line("M334,270 V284", n), _line("M458,270 V284", n),
+        _box(130, 286, 120, 44, "db", "Postgres + pgvector"),
+        _box(274, 286, 120, 44, "embed + rerank", "TEI"),
+        _box(418, 286, 100, 44, "escalate", "Inkling-Small", cls="box opt"),
+        _box(530, 316, 130, 40, "granite-gateway", "backend + llm-egress", cls="box door"),
+        _line("M581,270 H596 V314", n),
+        # the chat itself goes from Open WebUI straight to the gateway
+        _line("M115,220 V346 H528", n), _text(122, 340, "chat and tool calls (Granite)", "d-note"),
+        _line("M595,356 V420", n, cls="d-line dash"), _text(582, 366, "chat + model list", "d-note", "end"), _text(582, 378, "only; TLS checked", "d-note", "end"),
+        _box(530, 422, 130, 40, "Granite 4.2 30B", "your own vLLM server", cls="box cloud"),
+        _badge(135, 20, 1), _badge(198, 90, 2), _badge(229, 177, 3), _badge(367, 173, 4), _badge(493, 173, 5),
+        _badge(581, 238, 6), _badge(595, 372, 7),
+    ]
+    legend = ["Staff reach only the proxy", "The proxy passes the chat to Open WebUI",
+              "The tool calls policy-api (the filter sends attached files)", "policy-api queues the job; a worker claims it",
+              "The worker runs the graph, which saves a checkpoint after every step",
+              "The graph reads Postgres, asks TEI, asks Granite through the gateway",
+              "The gateway adds the key and passes the call to Granite"]
+    for i, t in enumerate(legend):
+        y = 396 + i * 15
+        b += [f'<circle class="step" cx="30" cy="{y}" r="6.5"/>', _text(30, y + 3, str(i + 1), "d-sub-ink", "middle"), _text(44, y + 3.5, t, "d-sub")]
+    return _svg(n, 680, 500, b, "Request path: proxy to Open WebUI to policy-api, where a worker runs the LangGraph graph, which uses the database, TEI and, through granite-gateway, Granite")
+
+
+def langgraph_graph() -> str:
+    n = "lggraph"
+
+    def node(x, y, title, sub, cls="box"):
+        return _box(x, y, 130, 50, title, sub, cls=cls) + f'<circle class="step" cx="{x + 120}" cy="{y + 10}" r="5"/>'
+
+    b = [
+        '<rect class="chip" x="20" y="12" width="70" height="22" rx="11"/>', _text(55, 27, "START", "d-chip", "middle"),
+        _line("M55,34 V58", n),
+        node(20, 60, "load", "policy, versions, group"),
+        node(190, 60, "diff", "old vs new, by section"),
+        node(360, 60, "find_related", "cites, terms, similar"),
+        node(530, 60, "judge", "Granite: yes, no, unsure"),
+        _line("M150,85 H188", n), _line("M320,85 H358", n), _line("M490,85 H528", n),
+        node(360, 190, "escalate", "Inkling-Small, if set", cls="box opt"),
+        node(530, 190, "summarise", "counts and rows, in code"),
+        _line("M595,110 V188", n, cls="d-line dash"),
+        _text(603, 146, "otherwise", "d-sub"),
+        _line("M560,110 V150 H425 V188", n, cls="d-line dash"),
+        _text(417, 144, "any pair unsure and ESCALATE_URL set", "d-sub", "end"),
+        _line("M492,215 H528", n),
+        node(530, 320, "review", "interrupt: waits for a person", cls="box door"),
+        _line("M595,240 V318", n, cls="d-line dash"),
+        _text(603, 275, "gate on and", "d-sub"), _text(603, 288, "a Maybe row", "d-sub"),
+        '<rect class="chip" x="190" y="332" width="130" height="26" rx="13"/>', _text(255, 349, "END", "d-chip", "middle"),
+        _line("M550,240 V288 H255 V330", n, cls="d-line dash"),
+        _text(400, 282, "otherwise", "d-sub", "middle"),
+        _line("M528,345 H322", n), _text(425, 338, "answer applied", "d-sub", "middle"),
+        # legend
+        _text(20, 184, "How to read it", "d-band"),
+        '<path class="d-line" d="M20,198 H52" marker-end="url(#lggraph-ah)"/>', _text(60, 201, "fixed step", "d-sub"),
+        '<path class="d-line dash" d="M20,216 H52" marker-end="url(#lggraph-ah)"/>', _text(60, 219, "chosen in code from the state", "d-sub"),
+        '<circle class="step" cx="36" cy="236" r="5"/>', _text(60, 239, "checkpoint saved after this step", "d-sub"),
+        '<rect class="box opt" x="20" y="248" width="32" height="14" rx="2"/>', _text(60, 259, "optional step", "d-sub"),
+        # the pause, explained
+        _text(330, 376, "While paused the run is needs_review,", "d-note"),
+        _text(330, 389, "the job has ended, nothing runs.", "d-note"),
+        _text(330, 402, "POST /runs/{id}/review queues a job", "d-note"),
+        _text(330, 415, "that resumes here: Command(resume).", "d-note"),
+        # the checkpoint store
+        '<rect class="band-back" x="20" y="448" width="640" height="52" rx="4"/>',
+        _text(34, 468, "Postgres: checkpoints, checkpoint_blobs, checkpoint_writes", "d-title"),
+        _text(34, 486, "One thread per check (thread id = run id). Saved and confirmed before the next step starts (durability sync).", "d-sub"),
+        _text(34, 497, "A restarted worker resumes after the last saved step. Recursion limit 25; the graph has at most 7 steps.", "d-sub"),
+    ]
+    return _svg(n, 680, 510, b, "The LangGraph state graph: load, diff, find_related and judge in a row, then an optional escalate, summarise, and an optional review that pauses for a person; a checkpoint is saved after every step")
+
+
 FIGURES = {
     "system": (system, "What runs where. People reach only the proxy; every service that holds policy text is on a sealed network."),
     "pipeline": (pipeline, "How one question is answered. Code makes every decision; the judge rules on one pair at a time."),
-    "containment": (containment, "Two barriers keep policy text in: a network with no gateway, and your host firewall."),
+    "containment": (containment, "Two barriers keep policy text in: a network with one narrow way out, and your host firewall."),
+    "langgraph-flow": (langgraph_flow, "The request path. People reach only the proxy; policy-api and Open WebUI reach Granite only through the gateway."),
+    "langgraph-graph": (langgraph_graph, "One check as a graph. Code chooses every branch; the state is saved to Postgres after every step."),
     "loop": (loop, "The review and training loop. A new judge replaces the old one only if it scores better."),
 }
 

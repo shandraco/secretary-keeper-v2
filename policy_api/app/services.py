@@ -7,6 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from .config import Settings
+from .graph import attach_graph
 from .pipeline import Services
 
 log = logging.getLogger(__name__)
@@ -28,7 +29,7 @@ async def build_services(settings: Settings) -> Services:
         if policies.is_dir():
             await ingest_dir(svc, policies)
         log.warning("DEMO MODE: stand-in models and sample policies. Never use for real decisions.")
-        return svc
+        return await attach_graph(svc)
 
     missing = [name for name, value in (
         ("DATABASE_URL", settings.database_url),
@@ -53,13 +54,13 @@ async def build_services(settings: Settings) -> Services:
         from .review import ArgillaReview
 
         review = ArgillaReview(settings.argilla_url, settings.argilla_api_key, settings.argilla_workspace)
-    return Services(
+    return await attach_graph(Services(
         settings,
         store,
         TEIEmbedder(settings.embed_url),
         TEIReranker(settings.rerank_url),
-        LLMJudge(settings.judge_url, key, settings.judge_model),
+        LLMJudge(settings.judge_url, settings.judge_api_key, settings.judge_model, {"enable_thinking": settings.judge_thinking}),
         LLMJudge(settings.escalate_url, key, settings.escalate_model) if settings.escalate_url else None,
         LLMExtractor(settings.extract_url, key, settings.extract_model, settings.policy_id_pattern) if settings.extract_url else None,
         review,
-    )
+    ))

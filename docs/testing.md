@@ -27,6 +27,8 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 |---|---|
 | `test_documents.py` | Clause splitting (headings, list items, duplicate numbers), reference and defined-term extraction, front matter, diff (modified, added, removed, renumbered) |
 | `test_pipeline.py` | The full sample run with stand-in models: which policies are Yes/Maybe/not affected, evidence, counts, the chat answer, workbook sheets, **policy text can't become an Excel formula** |
+| `test_graph.py` | The LangGraph run: "unsure" pairs go to the second model only when it is on; **a crash carries on from the last finished step**; the review pause waits until a person decides; review over the API; short check numbers (exactly 8 characters, status and review routes only) |
+| `test_upload_filter.py` | The upload filter: attachments, and typed `decide …` commands (only the person's own message counts; quoted or pasted lines, placeholders and malformed commands record nothing) |
 | `test_api.py` | API key required, **wrong Host header refused** (DNS-rebinding guard), lookups, upload → run → download, tampered download link refused, helpful errors |
 
 The stand-in models in `app/fakes.py` are deterministic. The fake judge says "yes" when a linked
@@ -43,7 +45,7 @@ TEST_DATABASE_URL=postgresql://postgres:test@localhost:55432/postgres .venv/bin/
 docker rm -f sk-test-db
 ```
 
-`test_pgstore.py` truncates its tables, so never point `TEST_DATABASE_URL` at a real database.
+`test_pgstore.py` truncates its tables, and also runs the graph with Postgres checkpoints (a fresh process picks a paused check up from the database), so never point `TEST_DATABASE_URL` at a real database.
 
 ## Level 3: the stack in demo mode
 
@@ -81,7 +83,7 @@ Each must return a plain instruction for the chat model, never a stack trace.
 
 On the GPU server, after [setup.md](setup.md):
 
-1. From inside the network, `docker compose exec policy-api python3 -c "import httpx,os; print(httpx.get('http://judge:8000/v1/models', headers={'Authorization':'Bearer '+os.environ['LLM_API_KEY']}).json())"` lists `judge`.
+1. From inside the network, `docker compose exec policy-api python3 -c "import httpx; print(httpx.get('http://granite-gateway:8000/v1/models').json())"` lists `granite-4.2-30b` (the gateway adds the key).
 2. Ingest `samples/policies`, upload `samples/changes/POL-007-v4.md` in Open WebUI, and ask about Safety.
 3. Expect SAF-112 and SAF-130 flagged, and SAF-141 and SAF-160 not affected. SAF-150 may be Yes or Maybe.
 4. In `judgements`, every `result` has all six fields, and none has the "could not be read" reason.

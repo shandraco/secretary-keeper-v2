@@ -12,3 +12,5 @@ reportlab>=4.2
 matplotlib>=3.9
 argilla==2.8.0   # review queue client; must match the Argilla server tag (ARGILLA_TAG)
 requests>=2.31   # imported by argilla 2.8.0 but not declared by it
+langgraph==1.2.16                      # runs each check as a graph (app/graph.py)
+langgraph-checkpoint-postgres==3.2.0   # saves its state after every step

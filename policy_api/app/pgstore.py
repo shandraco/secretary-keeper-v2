@@ -263,6 +263,15 @@ class PgStore:
         )
         return {k: _iso(v) for k, v in row.items()} if row else None
 
+    async def find_run_ids(self, prefix: str, status: str | None = None) -> list[str]:
+        """Ids of runs that start with this text; at most two, enough to tell unique from ambiguous."""
+        if not prefix or any(ch not in "0123456789abcdef-" for ch in prefix):
+            return []
+        async with self.pool.connection() as conn:
+            cur = await conn.execute("SELECT id::text AS id FROM runs WHERE id::text LIKE %s AND (%s::text IS NULL OR status = %s) "
+                                     "LIMIT 2", (prefix + "%", status, status))
+            return [r["id"] for r in await cur.fetchall()]
+
     async def save_change(self, run_id: str, change: Change) -> int:
         row = await self._one(
             "INSERT INTO changes (run_id, number, old_number, kind, heading, old_text, new_text, terms) "
@@ -312,6 +321,18 @@ class PgStore:
                 )
                 n += cur.rowcount
         return n
+
+    async def claim_review(self, run_id: str) -> bool:
+        """needs_review -> queued, once: a compare-and-set, so two answers sent together can't both apply."""
+        row = await self._one(
+            "UPDATE runs SET status = 'queued', progress = 'Waiting to apply the decisions…' "
+            "WHERE id = %s::uuid AND status = 'needs_review' RETURNING id::text", run_id)
+        return row is not None
+
+    async def delete_judgements(self, run_id: str, stage: str) -> None:
+        """Forget one stage's verdicts for a run, before that stage runs again after an interruption."""
+        async with self.pool.connection() as conn:
+            await conn.execute("DELETE FROM judgements WHERE run_id = %s::uuid AND stage = %s", (run_id, stage))
 
     async def save_judgement(self, run_id: str, change_id: int, row: ClauseRow, found_by: list[str],
                              stage: str, model: str, prompt_hash: str, result: dict, prompt: str = "") -> None:

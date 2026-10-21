@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Assign this server's GPUs to the model services.
+"""Assign this server's GPUs to the model services this stack runs itself.
+
+Granite 4.2 30B is not one of them: it already runs on your own vLLM server and is reached through
+granite-gateway (docs/setup.md). This script places the embedding and reranker models, and the
+optional extract, escalate, judge-tuned, judge-candidate and lora-trainer services.
 
 compose.yaml deliberately names no GPUs, because every cluster is different. Run this once on the
 GPU server, after .env exists (docs/setup.md step 3). It:
@@ -7,15 +11,16 @@ GPU server, after .env exists (docs/setup.md step 3). It:
   1. lists the GPUs that nvidia-smi sees,
   2. asks which GPU numbers each model service should use (or takes them as flags),
   3. checks the plan (GPUs exist, big models don't share a GPU, sizes vLLM accepts),
-  4. writes compose.gpu.yaml and sets COMPOSE_FILE, JUDGE_TP and ESCALATE_TP in .env.
+  4. writes compose.gpu.yaml and sets COMPOSE_FILE, ESCALATE_TP, TUNED_TP and CANDIDATE_TP in .env.
 
 After that, plain `docker compose ...` commands use the GPUs you chose. Run it again any time the
 hardware changes. To do the same by hand instead, copy compose.gpu.example.yaml.
 
 Examples:
   python3 scripts/setup_gpus.py                                  # asks questions
-  python3 scripts/setup_gpus.py --judge 0 --embed 1 --rerank 1   # no questions
-  python3 scripts/setup_gpus.py --judge 0,1 --embed 2 --rerank 2 --escalate 4,5,6,7
+  python3 scripts/setup_gpus.py --embed 0 --rerank 0             # no questions
+  python3 scripts/setup_gpus.py --embed 0 --rerank 0 --extract 1 --escalate 4,5,6,7
+  python3 scripts/setup_gpus.py --embed 0 --rerank 0 --dry-run   # show the result, write nothing
 """
 
 from __future__ import annotations
@@ -32,7 +37,6 @@ ENV = ROOT / ".env"
 
 # name: (what it is, served by vLLM?, required?)
 SERVICES = {
-    "judge": ("gpt-oss-120b, answers every question. Needs about 80 GB in total.", True, True),
     "embed": ("embedding model, small. Can share a GPU with rerank.", False, True),
     "rerank": ("reranker model, small. Can share a GPU with embed.", False, True),
     "extract": ("gpt-oss-20b, optional, finds references during ingest. About 24 GB.", True, False),
@@ -42,7 +46,6 @@ SERVICES = {
     "lora-trainer": ("training, optional, only while training. 20b needs about 80 GB.", False, False),
 }
 VLLM_TP_SIZES = {1, 2, 4, 8}
-JUDGE_MIN_MIB = 70_000  # gpt-oss-120b weights are about 61 GB; leave room for the KV cache
 
 
 def detect_gpus() -> dict[int, tuple[str, int]]:
@@ -124,11 +127,6 @@ def check(plan: dict[str, list[int]], gpus: dict[int, tuple[str, int]]) -> tuple
         if len(plan.get(small, [])) > 1:
             warnings.append(f"{small} only uses one GPU; extra GPUs listed for it are wasted")
 
-    if gpus and plan.get("judge"):
-        total = sum(gpus[i][1] for i in plan["judge"] if i in gpus)
-        if total < JUDGE_MIN_MIB:
-            errors.append(f"judge: its GPUs have {total // 1024} GB in total; gpt-oss-120b needs about 80 GB. "
-                          f"Add GPUs to it (e.g. 2 x 48 GB).")
     if plan.get("escalate"):
         warnings.append("escalate: check Inkling-Small's model card and the vLLM Inkling recipe for how many "
                         "GPUs it needs on your hardware, and its exact folder name (ESCALATE_MODEL_DIR).")
@@ -174,7 +172,12 @@ def main() -> int:
     for name, (about, _, _) in SERVICES.items():
         parser.add_argument(f"--{name}", dest=name.replace("-", "_"), metavar="IDS", help=about)
     parser.add_argument("--dry-run", action="store_true", help="show what would be written, change nothing")
+    parser.add_argument("--judge", help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.judge is not None:
+        print("Error: there is no 'judge' service to place. Granite runs on your own vLLM server "
+              "(docs/setup.md, Granite server requirements).", file=sys.stderr)
+        return 1
 
     if not ENV.exists():
         print("No .env yet. Do docs/setup.md step 3 first (cp .env.example .env).", file=sys.stderr)
@@ -213,7 +216,6 @@ def main() -> int:
     override = render_override(plan)
     env_values = {
         "COMPOSE_FILE": "compose.yaml:compose.gpu.yaml",
-        "JUDGE_TP": str(len(plan["judge"])),
         "ESCALATE_TP": str(len(plan.get("escalate") or [1])),
         "TUNED_TP": str(len(plan.get("judge-tuned") or [1])),
         "CANDIDATE_TP": str(len(plan.get("judge-candidate") or [1])),

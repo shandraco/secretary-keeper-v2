@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Proves that no running container can reach the internet, and that the check itself works.
+# Proves that no running container except granite-gateway can reach outside, that granite-gateway is the
+# only container on the llm-egress network, and that the check itself works.
 # Each "blocked" test is paired with a positive control that must succeed, so a broken probe
 # (no DNS, no network at all) can't make the test pass for the wrong reason.
 #
@@ -60,13 +61,51 @@ check() {  # check <service> <control-host> <control-port>
 }
 
 check policy-api db 5432
+check policy-api granite-gateway 8000
 check open-webui policy-api 8000
-check judge db 5432
 check judge-tuned db 5432
 check judge-candidate db 5432
 check argilla argilla-db 5432
 check argilla-worker argilla-db 5432
 check lora-trainer db 5432
+
+# --- The one way out: granite-gateway must be the only container on llm-egress -------------------
+egress_members() {  # services whose containers are attached to a network named *llm-egress
+  local svc cid
+  for svc in $services; do
+    for cid in $("${DC[@]}" ps -q "$svc" 2>/dev/null); do
+      if docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$cid" 2>/dev/null \
+           | tr ' ' '\n' | grep -q 'llm-egress$'; then echo "$svc"; fi
+    done
+  done
+}
+if running granite-gateway; then
+  members=$(egress_members | sort -u | tr '\n' ' ' | sed 's/ $//')
+  checked=$((checked + 1))
+  if [ "$members" = "granite-gateway" ]; then
+    echo "OK    granite-gateway is the only container on llm-egress"
+  else
+    echo "FAIL  containers on llm-egress: '${members:-none}' (must be exactly: granite-gateway)"; fail=1
+  fi
+  # The gateway answers its own health route, and refuses every route except chat and model list.
+  gw() { "${DC[@]}" exec -T granite-gateway wget -q -S -O /dev/null "http://127.0.0.1:8000$1" 2>&1 | head -1; }
+  if gw /health | grep -q "200"; then echo "OK    granite-gateway is healthy"; else echo "FAIL  granite-gateway /health did not answer"; fail=1; fi
+  if gw /v1/embeddings | grep -q "404"; then echo "OK    granite-gateway refuses other routes (/v1/embeddings -> 404)"; else echo "FAIL  granite-gateway passes a route it should refuse"; fail=1; fi
+  # Nothing else on the backend may reach the Granite server directly (only through the gateway).
+  url="${GRANITE_URL:-$(grep -E '^GRANITE_URL=' .env 2>/dev/null | head -1 | cut -d= -f2-)}"
+  hostport=$(sed -E 's#^[a-z]+://##; s#/.*$##' <<<"$url")
+  host=${hostport%%:*}; port=${hostport##*:}
+  [ "$port" = "$hostport" ] && { case "$url" in https:*) port=443;; *) port=80;; esac; }
+  if [ -n "$host" ]; then
+    for svc in policy-api open-webui; do
+      running "$svc" || continue
+      if probe "$svc" "$host" "$port"; then echo "FAIL  $svc can reach the Granite server directly (it must go through granite-gateway)"; fail=1
+      else echo "OK    $svc cannot reach the Granite server directly"; fi
+    done
+  fi
+else
+  echo "SKIP  granite-gateway is not running"
+fi
 
 if [ "$checked" -eq 0 ]; then
   echo "FAIL  no services were checked; start the stack first (a check that tested nothing is not a pass)"

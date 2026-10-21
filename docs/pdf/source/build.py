@@ -28,9 +28,9 @@ OUT = SRC.parent
 DOCS = OUT.parent
 FONTS = SRC / ".fonts"
 BUILD = SRC / ".build"
-REPO_URL = "https://github.com/shandraco/secretary-keeper-v2/blob/main/"
+REPO_URL = "https://github.com/shandraco/secretary-keeper-v2/blob/langgraph/"
 TITLE = "Policy Impact Assistant"
-VERSION = "secretary-keeper version 0.1, October 2026. MIT License."
+VERSION = "secretary-keeper version 0.1 (langgraph branch), October 2026. MIT License."
 
 # Handbook order: what it is, using it, installing and running it, then assurance.
 CHAPTERS = [
@@ -117,8 +117,8 @@ def place_figures(slug: str, body: str) -> str:
         return text[:at] + figure(key) + text[at:]
 
     if slug == "architecture":
-        body = swap_pre("1. Resolve", "pipeline", body)
-        body = before_h2("Components", "system", body, after=True)
+        body = before_h2("The parts in one picture", "langgraph-flow", body, after=True)
+        body = before_h2("The graph", "langgraph-graph", body, after=True)
     elif slug == "security":
         body = swap_pre("frontend network", "containment", body)
     elif slug == "review-and-training":

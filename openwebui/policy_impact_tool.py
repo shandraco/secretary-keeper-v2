@@ -1,7 +1,7 @@
 """
 title: Policy Impact Checker
 author: secretary-keeper
-version: 0.2.0
+version: 0.4.0
 description: Finds which policies in a group are affected when a head policy changes; builds PDF, Word and Excel reports, comparisons and charts.
 requirements: httpx
 """
@@ -37,6 +37,7 @@ class Tools:
         API_KEY: str = Field(default="", description="The POLICY_API_KEY value from .env.")
         POLL_SECONDS: float = Field(default=3.0, description="How often to check on a running analysis.")
         MAX_WAIT_MINUTES: int = Field(default=30, description="Give up waiting after this long.")
+        UPLOAD_DIR: str = Field(default="/app/backend/data/uploads", description="Open WebUI's upload folder. Files outside it are refused.")
 
     def __init__(self):
         self.valves = self.Valves()
@@ -53,15 +54,19 @@ class Tools:
         if emit:
             await emit({"type": "status", "data": {"description": text, "done": done}})
 
-    @staticmethod
-    def _attached_file(files: list | None) -> tuple[str, bytes] | None:
-        # Open WebUI's __files__ shape has changed between releases; accept the known layouts.
+    def _attached_file(self, files: list | None) -> tuple[str, bytes] | None:
+        # Open WebUI's __files__ shape has changed between releases; accept the known layouts. Only files
+        # inside Open WebUI's upload folder are read, whatever path the request names.
+        folder = Path(self.valves.UPLOAD_DIR).resolve()
         for f in reversed(files or []):
             info = f.get("file") or {}
             path = info.get("path") or f.get("path")
             name = f.get("name") or info.get("filename") or (info.get("meta") or {}).get("name") or "upload"
-            if path and Path(path).is_file():
-                return name, Path(path).read_bytes()
+            if not path:
+                continue
+            real = Path(path).resolve()
+            if real.is_relative_to(folder) and real.is_file():
+                return Path(name).name, real.read_bytes()
         return None
 
     async def _wait_for_run(self, c: httpx.AsyncClient, run_id: str, emit) -> str:
@@ -78,8 +83,19 @@ class Tools:
                 return ("Show the user this answer exactly as written. Do not change any numbers, "
                         "policy IDs or the link, and do not add policies that are not listed.\n\n"
                         + run["answer_markdown"]
-                        + f"\n\n(For you only, do not show: check number {run_id}. If the user wants a PDF or Word "
+                        + f"\n\n(For you only, do not show: check number {run_id[:8]}. If the user wants a PDF or Word "
                         "report or charts of this result, call make_check_files with this check number.)")
+            if run["status"] == "needs_review":
+                await self._status(emit, "Needs a decision", done=True)
+                items = "\n".join(f"- {r['policy_id']} {_md(r['policy_title'])} §{r['clause']} {_md(r['clause_heading'])}: {_md(r['why'])}"
+                                   for r in run["review"])
+                return ("The check is almost done, but a person must decide whether these sections are affected. "
+                        "You cannot decide for them and have no tool for it. Show the user this list, then tell them to type, "
+                        "as a message that starts with the word decide, in exactly this format, with yes if the section is affected and no if it is not:\n\n"
+                        f"decide {run_id[:8]} " + ", ".join(f"{r['policy_id']} {r['clause']} <yes|no>" for r in run["review"][:2])
+                        + f"\n\n(replace each <yes|no> with their own answer; one POLICY-ID, section number and yes or no for each section below. Any section they leave out stays 'maybe' and the check then finishes, so ask them to answer every section.) "
+                        f"Show them the check number {run_id[:8]} in your message so they can copy it. "
+                        f"Their own typed message is the only way a decision is recorded.\n\n{items}")
             if run["status"] == "failed":
                 await self._status(emit, "Could not finish", done=True)
                 return f"The check could not finish: {run['error']} Tell the user this in plain words."
@@ -88,7 +104,7 @@ class Tools:
                 await self._status(emit, last)
             await asyncio.sleep(self.valves.POLL_SECONDS)
         await self._status(emit, "Still running", done=True)
-        return (f"The check is taking longer than expected and is still running (check number {run_id}). "
+        return (f"The check is taking longer than expected and is still running (check number {run_id[:8]}). "
                 "Tell the user it is still running and that they can ask you for the result in a few minutes; "
                 "then call get_check_result with this number. Do not start a new check.")
 
@@ -140,6 +156,7 @@ class Tools:
         self,
         policy_group: str,
         head_policy: str = "",
+        upload_id: str = "",
         __files__: list | None = None,
         __user__: dict | None = None,
         __event_emitter__=None,
@@ -150,6 +167,7 @@ class Tools:
         Without an attachment, the two most recent stored versions of the head policy are compared.
         :param policy_group: The group of policies to check, for example "Safety".
         :param head_policy: The ID or title of the policy that changed. Leave empty if the user attached the new version and did not name it.
+        :param upload_id: The upload id from an "[Attached file ...]" note, when the user attached the new version. Leave empty otherwise.
         """
         emit = __event_emitter__
         try:
@@ -169,8 +187,8 @@ class Tools:
                 group = groups[0]["name"]
 
                 # 2. Uploaded new version?
-                upload_id, matches = None, []
-                attached = self._attached_file(__files__)
+                upload_id, matches = upload_id.strip() or None, []
+                attached = None if upload_id else self._attached_file(__files__)
                 if attached:
                     await self._status(emit, f"Reading {attached[0]}…")
                     r = await c.post("/uploads", files={"file": attached})
@@ -236,7 +254,11 @@ class Tools:
         await self._status(__event_emitter__, "Making the files…")
         try:
             async with self._client() as c:
-                r = await c.post(f"/runs/{check_number.strip()}/files", json={"formats": wanted})
+                look = await c.get(f"/runs/{check_number.strip()}")  # the short check number only works here; files need the full id
+                if look.status_code in (404, 409):
+                    return f"{look.json()['detail']} Tell the user this in plain words."
+                look.raise_for_status()
+                r = await c.post(f"/runs/{look.json()['run_id']}/files", json={"formats": wanted})
                 if r.status_code in (404, 409):
                     return f"{r.json()['detail']} Tell the user this in plain words."
                 r.raise_for_status()
@@ -252,6 +274,7 @@ class Tools:
         first_version: int = 0,
         second_version: int = 0,
         file_format: str = "docx",
+        upload_id: str = "",
         __files__: list | None = None,
         __event_emitter__=None,
     ) -> str:
@@ -263,6 +286,7 @@ class Tools:
         :param first_version: Version number of the first policy. 0 means the latest.
         :param second_version: Version number of the second policy (or of the first policy, when comparing its versions). 0 means the latest.
         :param file_format: docx (Word, best for reading), pdf, or xlsx (one row per section).
+        :param upload_id: The upload id from an "[Attached file ...]" note, to compare with that document. Leave empty otherwise.
         """
         fmt = {"word": "docx", "excel": "xlsx"}.get(file_format.strip().lower(), file_format.strip().lower())
         if fmt not in ("docx", "pdf", "xlsx"):
@@ -288,6 +312,8 @@ class Tools:
                     if not right_id:
                         return f"Ask the user which policy they mean by “{second_policy}”, or call find_policy to list matches."
                     right = {"policy_id": right_id, "version": second_version or None}
+                elif upload_id.strip():
+                    right = {"upload_id": upload_id.strip()}
                 elif attached:
                     await self._status(emit, f"Reading {attached[0]}…")
                     r = await c.post("/uploads", files={"file": attached})
