@@ -1,0 +1,8 @@
+# Pinned. transformers/trl/peft versions are the set that supports gpt-oss; PyTorch comes from the base image.
+transformers==4.56.2
+trl==0.21.0
+peft==0.17.1
+accelerate==1.10.1
+datasets==4.0.0
+psycopg[binary]==3.2.13
+pyyaml==6.0.2

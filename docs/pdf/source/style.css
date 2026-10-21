@@ -1,0 +1,117 @@
+/* Print styles for the handbook. build.py adds the footer text for each document. Tokens: ink, steel, rule, wash, tag (lockout yellow), link. */
+:root {
+  --ink: #1E2B36;
+  --steel: #5D6B78;
+  --rule: #D5DCE2;
+  --wash: #F1F4F6;
+  --tag: #F2B705;
+  --tag-deep: #C99700;
+  --tag-pale: #FDF3D0;
+  --link: #1F5F8B;
+  --red: #B42318;
+  --head: "Barlow Semi Condensed", "Arrows", "Arial Narrow", sans-serif;
+  --body: "Public Sans", "Arrows", Arial, sans-serif;
+  --mono: "IBM Plex Mono", Menlo, monospace;
+}
+
+@page {
+  size: Letter;
+  margin: 0.75in 0 0.8in;
+  @bottom-left { font: 7.5pt "Public Sans", sans-serif; color: #5D6B78; padding-left: 0.85in; vertical-align: middle; }
+  @bottom-right { content: counter(page); font: 600 8pt "Public Sans", sans-serif; color: #1E2B36; padding-right: 0.85in; vertical-align: middle; }
+}
+@page cover { margin: 0; @bottom-left { content: none; } @bottom-right { content: none; } }
+
+html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+body { margin: 0; padding: 0 0.85in; background: #fff; color: var(--ink); font: 9.6pt/1.55 var(--body); }
+
+/* Cover */
+.cover { page: cover; position: relative; height: 11in; margin: 0 -0.85in; overflow: hidden; }
+.cover .tag { position: absolute; left: 0; top: 1.5in; width: 6.3in; height: 3.7in; box-sizing: border-box;
+  padding: 0.62in 1.3in 0 0.85in; background: var(--tag); border-radius: 0 0.4in 0.4in 0; }
+.cover .hole { position: absolute; left: 5.62in; top: 3.14in; width: 0.42in; height: 0.42in; border-radius: 50%;
+  background: #fff; box-shadow: 0 0 0 0.08in var(--tag-deep); }
+.cover .string { position: absolute; left: 0; top: 0; width: 8.5in; height: 11in; }
+.cover h1 { font: 700 42pt/0.98 var(--head); margin: 0; letter-spacing: -0.01em; }
+.cover .for { font: 500 15pt/1.3 var(--head); margin: 0.22in 0 0; max-width: 4.6in; }
+.cover .intro { position: absolute; left: 0.85in; top: 5.85in; width: 4.9in; font-size: 11pt; line-height: 1.55; margin: 0; }
+.cover .meta { position: absolute; left: 0.85in; bottom: 0.8in; font-size: 8.5pt; color: var(--steel); margin: 0; }
+
+/* Contents */
+.contents { break-before: page; }
+.contents h1 { font: 700 26pt/1.1 var(--head); margin: 0 0 18pt; }
+.toc { list-style: none; padding: 0; margin: 0; }
+.toc li { display: grid; grid-template-columns: 0.42in 1fr 0.5in; padding: 9pt 0; border-top: 0.5pt solid var(--rule); break-inside: avoid; }
+.toc li:last-child { border-bottom: 0.5pt solid var(--rule); }
+.toc .n { font: 600 15pt/1 var(--head); color: var(--tag-deep); }
+.toc a { color: var(--ink); text-decoration: none; font: 600 13pt/1.15 var(--head); }
+.toc .what { display: block; color: var(--steel); font-size: 8.8pt; margin-top: 2pt; }
+.toc .who { display: block; font-size: 8pt; color: var(--ink); margin-top: 1pt; }
+.toc .p { text-align: right; font: 600 11pt/1.2 var(--head); }
+
+/* Chapter openers */
+.chapter { break-before: page; }
+.opener { margin: 0 0 16pt; }
+.opener .num { font: 600 11pt/1 var(--head); color: var(--steel); margin: 0 0 6pt; }
+.opener h1 { font: 700 30pt/1.02 var(--head); margin: 0; letter-spacing: -0.005em; }
+.opener .bar { width: 0.6in; height: 5pt; background: var(--tag); margin: 10pt 0 10pt; }
+.opener .what { color: var(--steel); font-size: 10.5pt; margin: 0; }
+.opener .who { font-size: 8.8pt; margin: 3pt 0 0; }
+.standalone-note { font-size: 8.5pt; color: var(--steel); margin: 0 0 14pt; }
+
+h2 { font: 600 16pt/1.15 var(--head); margin: 20pt 0 6pt; break-after: avoid; }
+h3 { font: 600 12.5pt/1.2 var(--head); margin: 14pt 0 4pt; break-after: avoid; }
+h4 { font: 600 10pt/1.3 var(--body); margin: 10pt 0 3pt; break-after: avoid; }
+p, li { orphans: 3; widows: 3; }
+p { margin: 0 0 7pt; }
+ul, ol { margin: 0 0 8pt; padding-left: 16pt; }
+li { margin: 0 0 3pt; }
+li > p { margin: 0 0 3pt; }
+strong { font-weight: 600; }
+a { color: var(--link); text-decoration: none; }
+
+code { font: 8.4pt/1.4 var(--mono); background: var(--wash); padding: 0.5pt 2.5pt; border-radius: 2px; }
+pre { background: var(--wash); border-left: 3pt solid var(--rule); padding: 7pt 9pt; margin: 0 0 9pt;
+  white-space: pre-wrap; overflow-wrap: anywhere; font: 8pt/1.45 var(--mono); }
+pre code { background: none; padding: 0; font: inherit; }
+pre.short { break-inside: avoid; }
+
+table { width: 100%; border-collapse: collapse; margin: 4pt 0 11pt; font-size: 8.5pt; line-height: 1.42; }
+thead { display: table-header-group; }
+tr { break-inside: avoid; }
+th { text-align: left; font: 600 9.5pt/1.25 var(--head); border-bottom: 1.2pt solid var(--ink); padding: 3pt 7pt 3pt 0; vertical-align: bottom; }
+td { border-bottom: 0.5pt solid var(--rule); padding: 4pt 7pt 4pt 0; vertical-align: top; }
+td code, th code { font-size: 7.8pt; }
+blockquote { margin: 0 0 9pt; padding: 2pt 0 2pt 10pt; border-left: 3pt solid var(--tag); }
+
+/* Figures */
+figure { margin: 10pt 0 14pt; break-inside: avoid; }
+figcaption { font-size: 8.4pt; color: var(--steel); margin-top: 5pt; max-width: 5.6in; }
+svg.diagram { width: 100%; height: auto; display: block; }
+.diagram .box { fill: #fff; stroke: var(--ink); stroke-width: 1.1; }
+.diagram .box.opt { stroke-dasharray: 4 3; stroke: var(--steel); }
+.diagram .box.door { fill: var(--tag); stroke: var(--tag-deep); }
+.diagram .box.small { stroke: var(--steel); }
+.diagram .box.cloud { stroke: var(--steel); stroke-dasharray: 2 3; }
+.diagram .band-back { fill: var(--wash); }
+.diagram .band-front { fill: var(--tag-pale); }
+.diagram .d-line { fill: none; stroke: var(--ink); stroke-width: 1.2; }
+.diagram .d-line.dash { stroke-dasharray: 4 3; stroke: var(--steel); }
+.diagram .d-line.blocked { stroke: var(--steel); }
+.diagram .x { stroke: var(--red); stroke-width: 2.6; stroke-linecap: round; }
+.diagram .wall { fill: var(--steel); }
+.diagram .d-spine { stroke: var(--rule); stroke-width: 2; }
+.diagram .step { fill: var(--tag); stroke: var(--tag-deep); stroke-width: 1; }
+.diagram .step.opt { fill: #fff; stroke-dasharray: 3 2; }
+.diagram .chip { fill: #fff; stroke: var(--steel); stroke-width: 0.9; }
+.diagram .chip.opt { stroke-dasharray: 3 2; }
+.diagram text { fill: var(--ink); }
+.diagram .d-title { font: 600 13px var(--head); }
+.diagram .d-sub { font: 400 9.5px var(--body); fill: var(--steel); }
+.diagram .d-sub-ink { font: 600 10px var(--body); }
+.diagram .d-note { font: 400 9.5px var(--body); fill: var(--steel); }
+.diagram .d-band { font: 600 10.5px var(--head); fill: var(--steel); }
+.diagram .d-num { font: 700 13px var(--head); }
+.diagram .d-step { font: 600 14px var(--head); }
+.diagram .d-desc { font: 400 10px var(--body); fill: var(--steel); }
+.diagram .d-chip { font: 400 9.5px var(--mono); }

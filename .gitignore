@@ -1,0 +1,23 @@
+.env
+secrets/
+models/*
+!models/README.md
+!models/SHA256SUMS
+exports/
+*.xlsx
+__pycache__/
+.pytest_cache/
+.venv/
+venv/
+eval/cases.json
+eval/private/
+# Per-server GPU assignments (scripts/setup_gpus.py)
+compose.gpu.yaml
+# LoRA training outputs: datasets (contain policy text), adapters, merged models
+training/out/
+training/data/
+*.safetensors
+*.gguf
+.DS_Store
+docs/pdf/source/.fonts/
+docs/pdf/source/.build/

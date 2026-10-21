@@ -1,0 +1,10 @@
+[
+  {
+    "name": "POL-007 v4: daily lockout checks, new isolation point definition",
+    "head_policy": "POL-007",
+    "subset": "Safety",
+    "new_version_file": "../samples/changes/POL-007-v4.md",
+    "expected_impacted": ["SAF-112", "SAF-130", "SAF-150"],
+    "source": "Sample data. Replace with real past changes; see docs/evaluation.md."
+  }
+]

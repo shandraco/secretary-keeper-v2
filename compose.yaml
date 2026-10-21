@@ -1,0 +1,359 @@
+# secretary-keeper: policy impact analysis on locally hosted models.
+# Setup: docs/setup.md. Every image tag is pinned in .env.
+# GPUs are NOT assigned here. Run scripts/setup_gpus.py on the GPU server: it writes compose.gpu.yaml
+# for that machine and points COMPOSE_FILE at it in .env.
+
+name: secretary-keeper
+
+x-vllm: &vllm
+  image: vllm/vllm-openai:${VLLM_TAG:?set VLLM_TAG in .env}
+  entrypoint: ["vllm", "serve"]
+  ipc: host
+  networks: [backend]
+  volumes: ["${MODELS_DIR:-./models}:/models:ro"]
+  environment:
+    VLLM_API_KEY: ${LLM_API_KEY:?set LLM_API_KEY in .env}
+    HF_HUB_OFFLINE: "1"
+    TRANSFORMERS_OFFLINE: "1"
+    VLLM_NO_USAGE_STATS: "1"
+    DO_NOT_TRACK: "1"
+  healthcheck:
+    test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+    interval: 30s
+    timeout: 5s
+    retries: 3
+    start_period: 30m        # large models take a long time to load
+  restart: unless-stopped
+
+x-tei: &tei
+  image: ghcr.io/huggingface/text-embeddings-inference:${TEI_TAG:?set TEI_TAG in .env}
+  networks: [backend]
+  volumes: ["${MODELS_DIR:-./models}:/models:ro"]
+  environment:
+    HF_HUB_OFFLINE: "1"
+  restart: unless-stopped
+
+# Shared by the Argilla services (profile review).
+x-argilla-env: &argilla-env
+    ARGILLA_HOME_PATH: /var/lib/argilla
+    ARGILLA_ELASTICSEARCH: http://argilla-es:9200
+    ARGILLA_DATABASE_URL: postgresql+asyncpg://argilla:${ARGILLA_DB_PASSWORD:-}@argilla-db:5432/argilla
+    ARGILLA_REDIS_URL: redis://argilla-redis:6379/0
+    # No telemetry, no calls to Hugging Face.
+    HF_HUB_DISABLE_TELEMETRY: "1"
+    HF_HUB_OFFLINE: "1"
+    ARGILLA_ENABLE_TELEMETRY: "0"
+    DO_NOT_TRACK: "1"
+
+services:
+  db:
+    image: pgvector/pgvector:${PGVECTOR_TAG:-pg17}
+    networks: [backend]
+    environment:
+      POSTGRES_USER: policy
+      POSTGRES_DB: policy
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U policy -d policy"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # Main judge and chat model. Also serves Open WebUI's chat, with tool calling on.
+  judge:
+    <<: *vllm
+    command:
+      - /models/gpt-oss-120b
+      - --served-model-name=judge
+      - --tensor-parallel-size=${JUDGE_TP:-1}
+      - --max-model-len=32768
+      - --gpu-memory-utilization=0.90
+      - --enable-auto-tool-choice
+      - --tool-call-parser=openai
+
+  # Optional: finds references the regex misses during ingest (`--llm-refs`).
+  extract:
+    <<: *vllm
+    profiles: [extract]
+    command:
+      - /models/gpt-oss-20b
+      - --served-model-name=extract
+      - --max-model-len=16384
+      - --gpu-memory-utilization=0.85
+
+  # Optional: second opinion on "unsure" cases. Check flags against the vLLM Inkling recipe for your GPUs.
+  escalate:
+    <<: *vllm
+    profiles: [escalate]
+    command:
+      - /models/${ESCALATE_MODEL_DIR:-inkling-small}
+      - --served-model-name=escalate
+      - --tokenizer-mode=inkling
+      - --reasoning-parser=inkling
+      - --tensor-parallel-size=${ESCALATE_TP:-1}
+      - --trust-remote-code
+
+  embed:
+    <<: *tei
+    command: ["--model-id", "/models/embedding", "--max-client-batch-size", "32"]
+
+  rerank:
+    <<: *tei
+    command: ["--model-id", "/models/reranker", "--max-client-batch-size", "32"]
+
+  policy-api:
+    build: ./policy_api
+    image: secretary-keeper/policy-api:${APP_VERSION:-dev}
+    networks: [backend]
+    environment:
+      DATABASE_URL: postgresql://policy:${POSTGRES_PASSWORD}@db:5432/policy
+      POLICY_API_KEY: ${POLICY_API_KEY:?set POLICY_API_KEY in .env}
+      LINK_SIGNING_KEY: ${LINK_SIGNING_KEY:?set LINK_SIGNING_KEY in .env}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8100}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1,policy-api}
+      LLM_API_KEY: ${LLM_API_KEY}
+      # Verdicts only. Point these at judge-tuned to use a fine-tuned judge; chat stays on `judge`.
+      JUDGE_URL: ${JUDGE_URL:-http://judge:8000/v1}
+      JUDGE_MODEL: ${JUDGE_MODEL:-judge}
+      ESCALATE_URL: ${ESCALATE_URL:-}
+      ESCALATE_MODEL: escalate
+      EXTRACT_URL: ${EXTRACT_URL:-}
+      EXTRACT_MODEL: extract
+      EMBED_URL: http://embed
+      RERANK_URL: http://rerank
+      JUDGE_CONCURRENCY: ${JUDGE_CONCURRENCY:-16}
+      SEMANTIC_K: ${SEMANTIC_K:-30}
+      RERANK_KEEP: ${RERANK_KEEP:-20}
+      POLICY_ID_PATTERN: ${POLICY_ID_PATTERN:-}   # empty = the built-in default, [A-Z]{2,6}-\d{1,5}
+      DEMO_MODE: ${DEMO_MODE:-0}
+      WORKER_ENABLED: ${WORKER_ENABLED:-1}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+      JOB_MAX_ATTEMPTS: ${JOB_MAX_ATTEMPTS:-3}
+      EXPORT_RETENTION_DAYS: ${EXPORT_RETENTION_DAYS:-30}
+      ARGILLA_URL: ${ARGILLA_URL:-}            # http://argilla:6900 once the review queue runs
+      ARGILLA_API_KEY: ${ARGILLA_API_KEY:-}
+      ARGILLA_WORKSPACE: ${ARGILLA_WORKSPACE:-policy-review}
+      REVIEW_SYNC_SECONDS: ${REVIEW_SYNC_SECONDS:-300}
+      REVIEW_SAMPLE_NO: ${REVIEW_SAMPLE_NO:-0.1}
+      SAMPLES_DIR: /samples
+    volumes:
+      - exports:/data/exports
+      - ${POLICY_SOURCE_DIR:-./samples/policies}:/policies:ro
+      - ./samples:/samples:ro
+      - ./eval:/eval:ro
+    depends_on:
+      db: {condition: service_healthy}
+    restart: unless-stopped
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:${OPENWEBUI_TAG:?set OPENWEBUI_TAG in .env}
+    networks: [backend]
+    environment:
+      WEBUI_SECRET_KEY: ${OPENWEBUI_SECRET_KEY:?set OPENWEBUI_SECRET_KEY in .env}
+      WEBUI_AUTH: "true"
+      ENABLE_SIGNUP: ${OPENWEBUI_ENABLE_SIGNUP:-true}   # set false once the admin account exists
+      ENABLE_OLLAMA_API: "false"
+      OPENAI_API_BASE_URL: http://judge:8000/v1
+      OPENAI_API_KEY: ${LLM_API_KEY}
+      OFFLINE_MODE: "true"
+      HF_HUB_OFFLINE: "1"
+      ENABLE_WEB_SEARCH: "false"
+      ENABLE_COMMUNITY_SHARING: "false"
+      ENABLE_IMAGE_GENERATION: "false"
+      RAG_EMBEDDING_ENGINE: openai
+      RAG_OPENAI_API_BASE_URL: http://embed/v1
+      RAG_OPENAI_API_KEY: unused
+      RAG_EMBEDDING_MODEL: embedding
+      ANONYMIZED_TELEMETRY: "false"
+      SCARF_NO_ANALYTICS: "true"
+      DO_NOT_TRACK: "true"
+    volumes:
+      - openwebui:/app/backend/data
+    restart: unless-stopped
+
+  # The only container on the user-facing network. Holds no data and makes no outbound requests.
+  proxy:
+    image: nginx:${NGINX_TAG:-1.27-alpine}
+    networks: [backend, frontend]
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:3000:3000"   # Open WebUI
+      - "${BIND_ADDR:-127.0.0.1}:8100:8100"   # report, chart and workbook downloads
+      - "${BIND_ADDR:-127.0.0.1}:6900:6900"   # review queue (Argilla), when the review profile runs
+    volumes:
+      - ./proxy/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on: [policy-api]
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------------------------
+  # Review queue (profile "review"): Argilla, where people confirm or correct the judge's answers.
+  # Everything here sits on the sealed backend network. Argilla's own database is separate from the
+  # policy database. The UI is reached through the proxy (see docs/review-and-training.md).
+  # ---------------------------------------------------------------------------------------------
+  argilla-db:
+    image: postgres:${ARGILLA_PG_TAG:-16.6-alpine}
+    profiles: [review]
+    networks: [backend]
+    environment:
+      POSTGRES_USER: argilla
+      POSTGRES_DB: argilla
+      POSTGRES_PASSWORD: ${ARGILLA_DB_PASSWORD:-}
+    volumes:
+      - argilla-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U argilla -d argilla"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  argilla-redis:
+    image: redis:${ARGILLA_REDIS_TAG:-7.4.2-alpine}
+    profiles: [review]
+    networks: [backend]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  argilla-es:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ARGILLA_ES_TAG:-8.17.0}
+    profiles: [review]
+    networks: [backend]
+    environment:
+      ES_JAVA_OPTS: -Xms${ARGILLA_ES_HEAP:-1g} -Xmx${ARGILLA_ES_HEAP:-1g}
+      node.name: argilla-es
+      cluster.name: argilla-es
+      discovery.type: single-node
+      cluster.routing.allocation.disk.threshold_enabled: "false"
+      xpack.security.enabled: "false"      # reachable only on the sealed backend network
+    ulimits:
+      memlock: {soft: -1, hard: -1}
+    volumes:
+      - argilla-esdata:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  argilla:
+    image: argilla/argilla-server:${ARGILLA_TAG:-v2.8.0}
+    profiles: [review]
+    networks: [backend]
+    # Refuse to start with an empty password or key (a blank one would silently skip creating the owner account).
+    command:
+      - bash
+      - -c
+      - |
+        for v in PASSWORD API_KEY; do
+          [ -n "$${!v}" ] || { echo "Set ARGILLA_ADMIN_PASSWORD and ARGILLA_API_KEY in .env" >&2; exit 1; }
+        done
+        [ "$${#PASSWORD}" -ge 8 ] || { echo "ARGILLA_ADMIN_PASSWORD must be at least 8 characters" >&2; exit 1; }
+        exec bash start_argilla_server.sh
+    environment:
+      <<: *argilla-env
+      # The first start creates this owner account; policy-api uses its API key.
+      USERNAME: ${ARGILLA_ADMIN_USER:-admin}
+      PASSWORD: ${ARGILLA_ADMIN_PASSWORD:-}
+      API_KEY: ${ARGILLA_API_KEY:-}
+      WORKSPACE: ${ARGILLA_WORKSPACE:-policy-review}
+    volumes:
+      - argilla-data:/var/lib/argilla
+    depends_on:
+      argilla-db: {condition: service_healthy}
+      argilla-es: {condition: service_healthy}
+      argilla-redis: {condition: service_healthy}
+    # Not /api/v1/status: in v2.8.0 it returns 422 (its Elasticsearch client reply does not parse) even when healthy.
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:6900/api/docs', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    restart: unless-stopped
+
+  argilla-worker:
+    image: argilla/argilla-server:${ARGILLA_TAG:-v2.8.0}
+    profiles: [review]
+    networks: [backend]
+    environment: *argilla-env
+    command: ["python", "-m", "argilla_server", "worker", "--num-workers", "2"]
+    depends_on:
+      argilla: {condition: service_healthy}
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------------------------
+  # Training (profile "train"): fine-tune the judge on reviewed answers. Needs a GPU, which you
+  # assign in compose.gpu.yaml like the other GPU services (see docs/review-and-training.md).
+  # ---------------------------------------------------------------------------------------------
+  lora-trainer:
+    build:
+      context: .
+      dockerfile: training/Dockerfile
+    image: secretary-keeper/lora-trainer:${APP_VERSION:-dev}
+    profiles: [train]
+    networks: [backend]
+    ipc: host
+    entrypoint: ["python"]
+    command: ["train_lora.py", "--help"]
+    environment:
+      DATABASE_URL: postgresql://policy:${POSTGRES_PASSWORD}@db:5432/policy
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      HF_DATASETS_OFFLINE: "1"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      DO_NOT_TRACK: "1"
+    volumes:
+      - ${MODELS_DIR:-./models}:/models:ro
+      - ${TRAIN_OUT_DIR:-./training/out}:/out
+    depends_on:
+      db: {condition: service_healthy}
+
+  # A second judge that serves the fine-tuned model, so the evaluation can compare it with the
+  # current one. It never receives real traffic until you switch (docs/review-and-training.md).
+  judge-candidate:
+    <<: *vllm
+    profiles: [train]
+    volumes:
+      - ${MODELS_DIR:-./models}:/models:ro
+      - ${TRAIN_OUT_DIR:-./training/out}:/out:ro
+    command:
+      - /out/merged
+      - --served-model-name=judge-candidate
+      - --tensor-parallel-size=${CANDIDATE_TP:-1}
+      - --max-model-len=32768
+      - --gpu-memory-utilization=0.90
+
+  # The fine-tuned judge after it passed the evaluation. Only policy-api's verdicts use it (set
+  # JUDGE_URL=http://judge-tuned:8000/v1 and JUDGE_MODEL=judge-tuned in .env); chat stays on `judge`.
+  judge-tuned:
+    <<: *vllm
+    profiles: [tuned]
+    command:
+      - /models/${TUNED_JUDGE_DIR:-judge-tuned}
+      - --served-model-name=judge-tuned
+      - --tensor-parallel-size=${TUNED_TP:-1}
+      - --max-model-len=32768
+      - --gpu-memory-utilization=0.90
+
+networks:
+  # Everything that touches policy text: models, database, policy-api, Open WebUI. No route out.
+  backend:
+    internal: true
+  # Only the proxy joins this. Your host firewall should still block outbound traffic from it.
+  frontend: {}
+
+volumes:
+  pgdata:
+  exports:
+  openwebui:
+  argilla-pgdata:
+  argilla-esdata:
+  argilla-data:

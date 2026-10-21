@@ -1,0 +1,48 @@
+# GPU assignments, filled in by whoever installs this on a GPU server.
+#
+# Easiest: run `python3 scripts/setup_gpus.py`. It writes compose.gpu.yaml for you and checks it.
+# By hand instead:
+#   1. cp compose.gpu.example.yaml compose.gpu.yaml      (compose.gpu.yaml is not committed)
+#   2. Replace every "SET-ME-…" below with GPU numbers from `nvidia-smi -L`. Delete optional services you don't run.
+#   3. In .env set:
+#        COMPOSE_FILE=compose.yaml:compose.gpu.yaml
+#        JUDGE_TP=<number of GPUs given to judge>
+#        ESCALATE_TP=<number of GPUs given to escalate>
+#   4. `docker compose config --quiet` must print nothing.
+#
+# Rough sizing (check each model card for your exact hardware and precision):
+#   judge     gpt-oss-120b   about 80 GB in total: 1 x H100/H200/B200 80 GB+, or 2 x 48 GB (JUDGE_TP=2)
+#   embed     embedding      a few GB; embed and rerank can share one GPU
+#   rerank    reranker       a few GB
+#   extract   gpt-oss-20b    optional, about 24 GB; one GPU of its own
+#   escalate  Inkling-Small  optional; GPU count per the vLLM Inkling recipe for your GPU family
+# Rules: vLLM services (judge, extract, escalate) never share a GPU with each other, and use
+# 1, 2, 4 or 8 GPUs each.
+
+services:
+  judge:
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, device_ids: ["SET-ME"], capabilities: [gpu]}]
+  embed:
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, device_ids: ["SET-ME"], capabilities: [gpu]}]
+  rerank:
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, device_ids: ["SET-ME"], capabilities: [gpu]}]
+  # Optional:
+  extract:
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, device_ids: ["SET-ME"], capabilities: [gpu]}]
+  escalate:
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, device_ids: ["SET-ME-1", "SET-ME-2", "SET-ME-3", "SET-ME-4"], capabilities: [gpu]}]
