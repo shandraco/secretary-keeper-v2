@@ -1,0 +1,16 @@
+name: secretary
+version: 0.1.0
+description: Search and read stored policies, run policy impact checks, and make reports. Talks only to policy-api.
+author: secretary-keeper
+requires_env:
+  - SECRETARY_API_KEY
+provides_tools:
+  - search_policies
+  - read_policy
+  - list_policy_groups
+  - find_policy
+  - check_policy_change
+  - get_check_result
+  - make_check_files
+  - compare_policies
+  - make_document

@@ -1,0 +1,29 @@
+# The one way out of the sealed backend network: to the Granite 4.2 server that already runs on vLLM.
+# Only the OpenAI-style chat and model-list routes are passed on; nothing else leaves.
+# ${GRANITE_URL} and ${GRANITE_API_KEY} are filled in from .env when the container starts (nginx templates).
+# The gateway adds the Granite key itself and drops whatever key the caller sent, so no internal key
+# ever leaves the backend network. Use an https:// GRANITE_URL unless Granite runs on this same machine;
+# its certificate is checked against the image's CA bundle, or GRANITE_CA_PATH for a private CA.
+
+server {
+  listen 8000;
+  server_tokens off;
+  client_max_body_size 10m;
+  proxy_read_timeout 600s;   # long answers and tool calls
+  proxy_buffering off;       # stream tokens as they arrive
+
+  location ~ ^/v1/(chat/completions|models)$ {
+    limit_except GET POST { deny all; }
+    proxy_pass ${GRANITE_URL};
+    proxy_http_version 1.1;
+    proxy_ssl_server_name on;
+    proxy_ssl_verify on;
+    proxy_ssl_verify_depth 3;
+    proxy_ssl_trusted_certificate ${GRANITE_CA_PATH};
+    proxy_set_header Authorization "Bearer ${GRANITE_API_KEY}";
+    proxy_set_header Connection "";
+    proxy_set_header Host $proxy_host;
+  }
+  location = /health { return 200 "ok\n"; }
+  location / { return 404; }
+}

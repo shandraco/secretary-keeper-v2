@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import logging
+import re
 import uuid
 from contextlib import asynccontextmanager
 from difflib import SequenceMatcher
@@ -17,6 +18,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .answer import render_answer
 from .config import load_settings
+from .documents import split_clauses
 from .safe_parse import ParseTimeout, parse_isolated
 from .excel import build_workbook
 from .reports.charts import change_matrix_png, impact_types_png, status_by_policy_png
@@ -91,8 +93,26 @@ def _run_id(run_id: str) -> str:
         raise HTTPException(404, "No such run.") from None
 
 
-async def _load_run(svc: Services, run_id: str) -> dict:
-    run = await svc.store.get_run(_run_id(run_id))
+_SHORT = re.compile(r"[0-9a-f]{8}")
+
+
+async def _load_run(svc: Services, run_id: str, *, short_status: str | None = None, short_ok: bool = False) -> dict:
+    """A run by its full id. With short_ok, also by its 8-character check number (exactly 8 hex characters, nothing
+    else), looked up among runs in short_status when that is given. Only the chat-facing status and review
+    routes allow it; every other route needs the full id."""
+    wanted = run_id.strip().lower()
+    try:
+        full = str(uuid.UUID(wanted))
+    except ValueError:
+        if not (short_ok and _SHORT.fullmatch(wanted)):
+            raise HTTPException(404, "No such run.") from None
+        found = await svc.store.find_run_ids(wanted, short_status)
+        if len(found) > 1:
+            raise HTTPException(409, "More than one check starts with that number. Please give a longer check number.")
+        if not found:
+            raise HTTPException(404, "No such run.")
+        full = found[0]
+    run = await svc.store.get_run(full)
     if not run:
         raise HTTPException(404, "No such run.")
     return run
@@ -123,6 +143,63 @@ async def policies(request: Request, q: str = Query(min_length=1, max_length=200
     items = [{**p, "score": _score(q, p["id"], p["title"])} for p in await svc_of(request).store.all_policies()]
     items = [p for p in sorted(items, key=lambda p: -p["score"]) if p["score"] >= 0.4][:limit]
     return {"policies": items}
+
+
+SEARCH_TEXT_CHARS = 1500
+READ_TEXT_CHARS = 20000
+
+
+@app.get("/search", dependencies=AUTH)
+async def search(request: Request, q: str = Query(min_length=2, max_length=500), group: str = Query("", max_length=200),
+                 policy: str = Query("", max_length=100), limit: int = Query(8, ge=1, le=20)) -> dict:
+    """Sections of stored policies that best answer a question: embeddings narrow, the reranker orders.
+    The assistant answers only from what this returns, and cites policy and section."""
+    svc = svc_of(request)
+    if policy:
+        if policy not in await svc.store.get_policies([policy]):
+            raise HTTPException(404, f"There is no policy called {policy}.")
+        ids = [policy]
+    elif group:
+        names = {s["name"].lower(): s["name"] for s in await svc.store.list_subsets()}
+        if group.lower() not in names:
+            raise HTTPException(404, f"There is no policy group called {group}.")
+        ids = await svc.store.subset_policy_ids(names[group.lower()])
+    else:
+        ids = [p["id"] for p in await svc.store.all_policies()]
+    [vector] = await svc.embedder.embed([q])
+    rows = await svc.store.nearest(vector, ids, max(30, limit * 3))
+    if not rows:
+        return {"results": []}
+    scores = await svc.reranker.rerank(q, [r.text for r in rows])
+    metas = await svc.store.get_policies(list({r.policy_id for r in rows}))
+    ranked = sorted(zip(scores, rows), key=lambda t: -t[0])[:limit]
+    return {"results": [{
+        "policy_id": r.policy_id, "policy_title": metas[r.policy_id]["title"], "clause": r.number,
+        "heading": r.heading, "text": r.body[:SEARCH_TEXT_CHARS], "score": round(float(s), 3),
+    } for s, r in ranked]}
+
+
+@app.get("/policies/{policy_id}/text", dependencies=AUTH)
+async def policy_text(request: Request, policy_id: str, version: int | None = Query(None, ge=1),
+                      clause: str = Query("", max_length=50)) -> dict:
+    """A stored policy's wording: the whole policy, or one section with its subsections."""
+    svc = svc_of(request)
+    pol = (await svc.store.get_policies([policy_id])).get(policy_id)
+    if not pol:
+        raise HTTPException(404, f"There is no policy called {policy_id}.")
+    versions = dict(await svc.store.latest_versions(policy_id, 1000))
+    v = version or max(versions)
+    if v not in versions:
+        raise HTTPException(404, f"{policy_id} has no version {v}. Stored versions: {', '.join(map(str, sorted(versions)))}.")
+    body = versions[v]
+    if clause:
+        c = clause.strip().lstrip("§").strip()
+        parts = [x for x in split_clauses(body) if x.number == c or x.number.startswith(c + ".")]
+        if not parts:
+            raise HTTPException(404, f"{policy_id} version {v} has no section {c}.")
+        body = "\n\n".join(f"§{x.number} {x.text}" for x in parts)
+    return {"policy_id": policy_id, "title": pol["title"], "version": v, "versions": sorted(versions),
+            "clause": clause or None, "text": body[:READ_TEXT_CHARS], "truncated": len(body) > READ_TEXT_CHARS}
 
 
 @app.post("/uploads", dependencies=AUTH)
@@ -178,8 +255,12 @@ async def start_run(request: Request, body: RunRequest) -> dict:
 @app.get("/runs/{run_id}", dependencies=AUTH)
 async def run_status(request: Request, run_id: str) -> dict:
     svc = svc_of(request)
-    run = await _load_run(svc, run_id)
+    run = await _load_run(svc, run_id, short_ok=True)
     out = {"run_id": run["id"], "status": run["status"], "progress": run["progress"], "error": run["error"]}
+    if run["status"] == "needs_review":
+        out["review"] = [{"policy_id": r["policy_id"], "policy_title": r["policy_title"], "clause": r["clause"],
+                          "clause_heading": r["clause_heading"], "why": r["why"]}
+                         for r in run["result"]["rows"] if r["status"] == "Maybe"]
     if run["status"] == "done":
         s = svc.settings
         url = excel_url(s.public_base_url, s.link_signing_key, run["id"], s.link_ttl_hours)
@@ -193,6 +274,38 @@ async def run_results(request: Request, run_id: str) -> dict:
     if run["status"] != "done":
         raise HTTPException(409, "This run has not finished.")
     return run["result"]
+
+
+class Decision(BaseModel):
+    policy_id: str = Field(min_length=1, max_length=100)
+    clause: str = Field(min_length=1, max_length=50)
+    affected: bool
+
+
+class ReviewRequest(BaseModel):
+    decisions: list[Decision] = Field(min_length=1, max_length=500)
+    reviewed_by: str | None = Field(default=None, max_length=200)
+
+
+@app.post("/runs/{run_id}/review", dependencies=AUTH, status_code=202)
+async def review_run(request: Request, run_id: str, body: ReviewRequest) -> dict:
+    """A person's decisions on the "maybe" sections of a check paused for review (REVIEW_GATE=1)."""
+    svc = svc_of(request)
+    run = await _load_run(svc, run_id, short_ok=True, short_status="needs_review")
+    if run["status"] != "needs_review":
+        raise HTTPException(409, "This check is not waiting for a decision.")
+    waiting = {(r["policy_id"], r["clause"]) for r in run["result"]["rows"] if r["status"] == "Maybe"}
+    unknown = [f"{d.policy_id} §{d.clause}" for d in body.decisions if (d.policy_id, d.clause) not in waiting]
+    if unknown:
+        raise HTTPException(422, f"These sections are not waiting for a decision: {', '.join(unknown)}.")
+    answer = {"decisions": [d.model_dump() for d in body.decisions], "by": body.reviewed_by or ""}
+    if not await svc.store.claim_review(run["id"]):
+        raise HTTPException(409, "This check is not waiting for a decision.")
+    await svc.store.enqueue("review_run", {"run_id": run["id"], "answer": answer},
+                            max_attempts=svc.settings.job_max_attempts)
+    if request.app.state.worker:
+        request.app.state.worker.poke()
+    return {"run_id": run["id"], "status": "queued"}
 
 
 MEDIA = {

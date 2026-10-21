@@ -18,7 +18,8 @@ Examples:
 > Check the HR group against the latest version of the leave policy.
 
 If something is unclear, the assistant asks you one short question. A check usually takes one to a
-few minutes. You'll see progress messages while it works.
+few minutes. Your chat waits for the answer (up to 10 minutes). If a check takes longer, the assistant
+tells you it is still running; ask again in a few minutes and it fetches the result.
 
 **Attaching a file:** use `.docx`, `.pdf`, `.md` or `.txt`. The sections must be numbered (1, 2.1,
 4.3…), because the system compares the policy section by section.
@@ -36,6 +37,21 @@ Then you'll see:
 - **"Might be affected"** policies. A person must check these: the system wasn't sure.
 - How many were checked and are **not affected**
 - **A link to the Excel file** with all the detail
+
+### If the assistant asks you to decide
+
+Some installations pause a check when it has "maybe" sections, so a person settles them before the
+final answer. The assistant then lists the sections and shows a line to copy, like this:
+
+> decide 3f9a1c2e SAF-150 3.1 <yes|no>, SAF-151 2.4 <yes|no>
+
+Type it as your **whole message**, starting with the word `decide`, and replace each `<yes|no>` with
+your own answer: `yes` if the section is affected, `no` if it is not. Add one entry for every section
+on the list. To answer every section the same way, type `decide 3f9a1c2e all no` (or `all yes`).
+The assistant cannot decide for you. When your decision is recorded, the check finishes and the
+assistant shows the final answer. Sections you leave out stay "Maybe", and the check ends; you can't decide it again afterwards.
+If you are told nothing was recorded, copy the line from the assistant again.
+The check number is only for this. Don't paste it where people outside the team can read it.
 
 ### Use the Excel file
 

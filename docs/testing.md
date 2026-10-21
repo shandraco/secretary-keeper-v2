@@ -10,7 +10,7 @@ policies is a separate question, answered by [evaluation.md](evaluation.md).
 | 1. Unit + flow | `pytest -q` (in `policy_api/`) | Python only | Parsing, diff, candidate search, verdict handling, chat answer, Excel, API auth and flow |
 | 2. Postgres | `TEST_DATABASE_URL=… pytest -q` | Docker | The real store: SQL, pgvector search, versions, reference graph, audit rows, restart handling |
 | 3. Stack (demo) | `DEMO_MODE=1` + Compose | Docker | Images build, services start, proxy rules, download links, network containment |
-| 4. Stack (real models) | Smoke test below | GPU server | vLLM and TEI wiring, structured output, tool calling in Open WebUI |
+| 4. Stack (real models) | Smoke test below | GPU server | vLLM and TEI wiring, structured output, tool calling through Hermes |
 | 5. Evaluation | `python -m app.evaluate` | GPU server + labelled cases | Whether it finds the right policies ([evaluation.md](evaluation.md)) |
 
 Run levels 1–2 on every change. Run 3 before every release. Run 4–5 after any model, image or prompt change.
@@ -59,9 +59,9 @@ docker compose --env-file /tmp/test.env exec policy-api python -m app.evaluate /
 docker compose --env-file /tmp/test.env down -v
 ```
 
-### Testing the Open WebUI tool without Open WebUI
+### Testing the Open WebUI tool without Open WebUI (other versions only)
 
-The tool's logic can be run inside the policy-api container, which has the same libraries:
+This version does not use the Open WebUI tool; Hermes and its `secretary` plugin do that job. The file stays in the repo for the `main` and `langgraph` versions. Its logic can be run inside the policy-api container, which has the same libraries:
 
 ```bash
 docker cp openwebui/policy_impact_tool.py secretary-keeper-policy-api-1:/tmp/tool.py
@@ -81,7 +81,7 @@ Each must return a plain instruction for the chat model, never a stack trace.
 
 On the GPU server, after [setup.md](setup.md):
 
-1. From inside the network, `docker compose exec policy-api python3 -c "import httpx,os; print(httpx.get('http://judge:8000/v1/models', headers={'Authorization':'Bearer '+os.environ['LLM_API_KEY']}).json())"` lists `judge`.
+1. From inside the network, `docker compose exec policy-api python3 -c "import httpx; print(httpx.get('http://granite-gateway:8000/v1/models').json())"` lists `granite-4.2-30b` (the gateway adds the key).
 2. Ingest `samples/policies`, upload `samples/changes/POL-007-v4.md` in Open WebUI, and ask about Safety.
 3. Expect SAF-112 and SAF-130 flagged, and SAF-141 and SAF-160 not affected. SAF-150 may be Yes or Maybe.
 4. In `judgements`, every `result` has all six fields, and none has the "could not be read" reason.

@@ -213,6 +213,10 @@ class MemoryStore:
     async def get_run(self, run_id: str) -> dict | None:
         return self.runs.get(run_id)
 
+    async def find_run_ids(self, prefix: str, status: str | None = None) -> list[str]:
+        """Ids of runs that start with this text; at most two, enough to tell unique from ambiguous."""
+        return [i for i, r in self.runs.items() if i.startswith(prefix) and (status is None or r.get("status") == status)][:2]
+
     async def save_change(self, run_id: str, change: Change) -> int:
         change_id = max((c["id"] for c in self.changes), default=0) + 1
         self.changes.append({"id": change_id, "run_id": run_id, **change.__dict__})
@@ -262,6 +266,17 @@ class MemoryStore:
                                              reviewer_note=d.note or None, reviewed_by=d.reviewer, reviewed_at=d.reviewed_at)
                 n += 1
         return n
+
+    async def claim_review(self, run_id: str) -> bool:
+        """needs_review -> queued, once. False if someone else got there first."""
+        run = self.runs.get(run_id)
+        if not run or run["status"] != "needs_review":
+            return False
+        run.update(status="queued", progress="Waiting to apply the decisions…")
+        return True
+
+    async def delete_judgements(self, run_id: str, stage: str) -> None:
+        self.judgements = [j for j in self.judgements if not (j["run_id"] == run_id and j["stage"] == stage)]
 
     async def save_judgement(self, run_id: str, change_id: int, row: ClauseRow, found_by: list[str],
                              stage: str, model: str, prompt_hash: str, result: dict, prompt: str = "") -> None:

@@ -1,0 +1,74 @@
+# Hermes settings for the policy assistant. Mounted read-only at /opt/data/config.yaml, so nobody can
+# change them from the chat. Key names checked against hermes-agent 86fa9e6 (hermes_cli/config_defaults.py);
+# check them again before moving HERMES_TAG in .env.
+
+# Main model: Granite 4.2 30B on the existing vLLM server, through granite-gateway (which adds the key).
+# If GRANITE_MODEL in .env is not granite-4.2-30b, change `default` and `delegation.model` to match.
+model:
+  provider: custom
+  default: granite-4.2-30b
+  base_url: http://granite-gateway:8000/v1
+  api_key: unused
+  # What the Granite server serves (--max-model-len). Hermes refuses anything under 64,000 tokens.
+  context_length: 131072
+
+# Subagents Hermes starts for side tasks use the same model, with a small budget each.
+delegation:
+  provider: custom
+  model: granite-4.2-30b
+  base_url: http://granite-gateway:8000/v1
+  api_key: unused
+  max_iterations: 20
+  max_concurrent_children: 3
+  max_spawn_depth: 1
+
+# Helper calls (compressing long chats, titles, approvals...) go to the main model. Left on "auto",
+# Hermes would try outside providers first; the sealed network would block them, but they'd fail slowly.
+auxiliary:
+  compression: {provider: main}
+  title_generation: {provider: main}
+  approval: {provider: main}
+  review: {provider: main}
+  memory_query_rewrite: {provider: main}
+  goal_judge: {provider: main}
+  monitor: {provider: main}
+  curator: {provider: main}
+  vision: {provider: main}
+  mcp: {provider: main}
+  background_review: {enabled: false, provider: main}
+
+agent:
+  max_turns: 30          # default is unlimited
+  disabled_toolsets: [web, search, x_search, browser, vision, image_gen, video, video_gen, tts,
+                      connections, computer_use, terminal, file, code_execution, skills, memory,
+                      session_search, cronjob, kanban]
+
+# What the assistant may use when called from Open WebUI: our policy tools, its to-do list, and subagents.
+# No web search, files, terminal or code, by design: answers come only from the policy database.
+platform_toolsets:
+  api_server: [secretary, todo, delegation]
+
+# Give the model every tool directly. Hermes otherwise hides some behind a tool_search step,
+# which a mid-size local model handles less reliably than ten plainly listed tools.
+tools:
+  tool_search:
+    enabled: "off"
+
+plugins:
+  enabled: [secretary]
+  auto_update_check_hours: 0
+
+# Nothing remembered between chats, and no skills written by the assistant itself.
+memory:
+  memory_enabled: false
+  user_profile_enabled: false
+curator:
+  enabled: false
+
+# No calls home.
+updates:
+  check: false
+model_catalog:
+  enabled: false
+security:
+  allow_lazy_installs: false

@@ -14,7 +14,8 @@ from app.config import load_settings
 from app.documents import parse_policy
 from app.fakes import FakeEmbedder, FakeJudge, FakeReranker
 from app.ingest import ingest_dir
-from app.pipeline import Services, execute_run
+from app.graph import attach_graph, execute_run
+from app.pipeline import Services
 
 URL = os.environ.get("TEST_DATABASE_URL")
 pytestmark = pytest.mark.skipif(not URL, reason="TEST_DATABASE_URL not set")
@@ -29,7 +30,9 @@ async def _flow(samples):
         await conn.execute("TRUNCATE policies, uploads, runs, jobs CASCADE")
     embedder = FakeEmbedder()
     embedder.dim = 768  # match vector(768) in init.sql
-    svc = Services(replace(load_settings(), demo_mode=True), store, embedder, FakeReranker(), FakeJudge())
+    # Not demo mode, so the graph saves its checkpoints in Postgres too.
+    settings = replace(load_settings(), demo_mode=False, database_url=URL, review_gate=True)
+    svc = await attach_graph(Services(settings, store, embedder, FakeReranker(), FakeJudge()))
     try:
         await ingest_dir(svc, samples / "policies")
         # Store v4 as a second version too, to test the no-upload path.
@@ -43,6 +46,11 @@ async def _flow(samples):
 
         run_id = await store.create_run("POL-007", "Safety", None, "test")
         await execute_run(svc, run_id)
+        assert (await store.get_run(run_id))["status"] == "needs_review"
+        # A fresh process (new checkpointer connection) picks the paused check up from Postgres.
+        later = await attach_graph(Services(settings, store, embedder, FakeReranker(), FakeJudge()))
+        await execute_run(later, run_id, resume={"decisions": [], "by": "test"})
+        later.exit_stack and await later.exit_stack.aclose()
         run = await store.get_run(run_id)
         assert run["status"] == "done", run["error"]
         async with store.pool.connection() as conn:
@@ -53,6 +61,7 @@ async def _flow(samples):
             assert counts["with_prompt"] == judged  # every verdict keeps the exact prompt, for review and training
         return run["result"], judged
     finally:
+        await svc.exit_stack.aclose()
         await store.close()
 
 
@@ -142,6 +151,32 @@ def test_review_queries_on_postgres(samples):
             saved = await store.save_review_decisions([ReviewDecision(target, "no", "", "already fixed", "sam",
                                                                        "2026-10-16T10:00:00+00:00")])
             assert saved == 1 and (await store.last_review_at()).startswith("2026-10-16T10:00:00")
+        finally:
+            await store.close()
+
+    asyncio.run(flow())
+
+
+def test_run_prefixes_on_postgres():
+    async def flow():
+        from app.pgstore import PgStore
+
+        store = PgStore(URL)
+        await store.open()
+        try:
+            async with store.pool.connection() as conn:
+                await conn.execute("TRUNCATE runs, jobs CASCADE")
+                await conn.execute("INSERT INTO policies (id, title) VALUES ('X-1', 'x') ON CONFLICT DO NOTHING")
+                for i in ("aaaaaaaa-0000-4000-8000-000000000001", "aaaaaaaa-0000-4000-8000-000000000002",
+                          "bbbbbbbb-0000-4000-8000-000000000003"):
+                    await conn.execute("INSERT INTO runs (id, head_policy, subset, status) VALUES (%s::uuid, 'X-1', 'Safety', 'queued')", (i,))
+            assert await store.find_run_ids("bbbbbbbb") == ["bbbbbbbb-0000-4000-8000-000000000003"]
+            assert len(await store.find_run_ids("aaaaaaaa")) == 2
+            assert await store.find_run_ids("cccccccc") == []
+            assert await store.find_run_ids("a%") == []  # not a pattern
+            assert await store.find_run_ids("aaaaaaaa", "needs_review") == []
+            await store.update_run("aaaaaaaa-0000-4000-8000-000000000001", status="needs_review")
+            assert await store.find_run_ids("aaaaaaaa", "needs_review") == ["aaaaaaaa-0000-4000-8000-000000000001"]
         finally:
             await store.close()
 

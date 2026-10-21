@@ -8,6 +8,7 @@ from app import jobs
 from app.config import load_settings
 from app.fakes import FakeEmbedder, FakeJudge, FakeReranker
 from app.ingest import ingest_dir
+from app.graph import attach_graph
 from app.pipeline import Services
 from app.store import MemoryStore
 
@@ -20,7 +21,7 @@ def fast_retries(monkeypatch):
 
 async def _svc(samples, **settings):
     s = replace(load_settings(), demo_mode=True, job_lease_seconds=1, **settings)
-    svc = Services(s, MemoryStore(), FakeEmbedder(), FakeReranker(), FakeJudge())
+    svc = await attach_graph(Services(s, MemoryStore(), FakeEmbedder(), FakeReranker(), FakeJudge()))
     await ingest_dir(svc, samples / "policies")
     from app.documents import parse_policy
     from app.ingest import ingest_doc

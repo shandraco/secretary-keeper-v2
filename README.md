@@ -1,29 +1,97 @@
 # secretary-keeper
 
-> **This branch (`main`) is the v0.1 baseline.** Three newer versions live on their own branches. All three
-> use IBM Granite 4.2 30B on your own vLLM server and a trimmed Open WebUI:
->
-> | Branch | What answers the chat | How each check runs |
-> |---|---|---|
-> | [`langgraph`](../../tree/langgraph) | Open WebUI with the Policy Impact tool | A LangGraph graph with saved steps, crash-resume and an optional review pause |
-> | [`hermes`](../../tree/hermes) | Hermes Agent with a policy-tools plugin, answering only from the policy database | The fixed check pipeline |
-> | [`hermes-langgraph`](../../tree/hermes-langgraph) | Hermes Agent with the plugin | The LangGraph graph, with the review pause |
->
-> Each branch's README and `docs/architecture.md` describe its architecture; PDFs are in `docs/pdf/`.
-
 Ask **"Which of our Safety policies are affected by the change to POL-007?"** and get back a
 plain-language answer, a comparison table, and an Excel workbook with the evidence for every policy.
 
-It runs entirely on your own hardware with locally hosted, US-developed models. Policy text never
-leaves the contained environment.
+It runs on your own hardware with US-developed models. Policy text never leaves your network: the
+backend is sealed, and the only way out is one gateway to your own Granite server.
 
+> **You are on the `hermes-langgraph` branch: the hermes + langgraph version.** Hermes Agent is the
+> assistant people talk to, and each check runs as a LangGraph graph that saves its progress, so a
+> crash resumes where it stopped. With `REVIEW_GATE=1` a check with "maybe" sections pauses until a
+> person types their decision in the chat. The other versions are listed under
+> [Three versions](#three-versions).
+
+```mermaid
+flowchart LR
+  U[Staff] --> P[nginx proxy]
+  P --> W[Open WebUI<br/>+ upload filter]
+  W -->|chat| H[Hermes Agent API server<br/>secretary plugin]
+  W -.->|attached files,<br/>typed decide commands| A
+  H -->|policy tools| A[policy-api<br/>worker + LangGraph graph]
+  A -->|checkpoint after<br/>every step| D[(Postgres + pgvector)]
+  A --> T[TEI embed + rerank]
+  A -->|verdicts| G[granite-gateway]
+  H -->|model calls| G
+  G --> V[Granite 4.2 30B on your vLLM server]
 ```
-Staff ─▶ Open WebUI (chat) ─▶ Policy Impact tool ─▶ policy-api ─▶ diff → find related sections → judge each pair
-                                                                    │              │                  │
-                                                              Postgres +      embeddings +       gpt-oss-120b
-                                                               pgvector         reranker      (+ Inkling-Small for
-                                                                                                "unsure" cases)
+
+The main model, IBM Granite 4.2 30B, already runs on your own vLLM server. The stack does not start
+it. Everything reaches it through `granite-gateway`, the one way out of the sealed backend network.
+The gateway passes on chat and model-list calls only, adds the API key itself, and checks the
+server's certificate. Inkling-Small ("unsure" cases) and the other extra models are optional and run
+locally. See [docs/setup.md](docs/setup.md#granite-server-requirements).
+
+## Three versions
+
+This repo has four branches. `main` is the v0.1 baseline. The other three build on one shared base
+(the trimmed chat screen and the Granite gateway) and differ in who drives a check.
+
+| Branch | In one line |
+|---|---|
+| `main` | v0.1 baseline. An Open WebUI tool calls policy-api, which runs a fixed pipeline. |
+| `langgraph` | No Hermes. Open WebUI plus the policy tool. Each check runs as a LangGraph graph with Postgres checkpoints, so a crash resumes where it stopped. With `REVIEW_GATE` on, the check pauses and the person decides the "maybe" sections in chat. |
+| `hermes` | Open WebUI talks to the Hermes Agent API server, which uses Granite. Hermes has a `secretary` plugin with policy tools, including database search (`GET /search`) and policy text (`GET /policies/{id}/text`). It has no web, files, terminal or memory, and no MCP. |
+| `hermes-langgraph` (this branch) | Hermes in front, LangGraph running each check. With `REVIEW_GATE`, a check pauses and the person's typed `decide ...` message, read by the Open WebUI upload filter, resumes it. The assistant has no decide tool. |
+
+### `langgraph`
+
+```mermaid
+flowchart LR
+  U[Staff] --> P[nginx proxy]
+  P --> W[Open WebUI + upload filter]
+  W -->|policy tool| A[policy-api]
+  A --> L[LangGraph graph<br/>checkpoints in Postgres]
+  L --> D[(Postgres + pgvector)]
+  L --> T[TEI embed + rerank]
+  L --> G[granite-gateway]
+  W -->|chat| G
+  G --> V[Granite vLLM server]
 ```
+
+### `hermes`
+
+```mermaid
+flowchart LR
+  U[Staff] --> P[nginx proxy]
+  P --> W[Open WebUI + upload filter]
+  W --> H[Hermes Agent API server<br/>secretary plugin]
+  H -->|policy tools| A[policy-api<br/>fixed pipeline]
+  H -->|model calls| G[granite-gateway]
+  A --> D[(Postgres + pgvector)]
+  A --> T[TEI embed + rerank]
+  A --> G
+  G --> V[Granite vLLM server]
+```
+
+### `hermes-langgraph` (this branch)
+
+The diagram at the top of this page.
+
+### Comparing them
+
+| | `main` | `langgraph` | `hermes` | `hermes-langgraph` |
+|---|---|---|---|---|
+| Who decides which tool to call | Granite, through Open WebUI | Granite, through Open WebUI | Hermes (with Granite) | Hermes (with Granite) |
+| How a check runs | Fixed pipeline in policy-api | LangGraph graph | Fixed pipeline in policy-api | LangGraph graph |
+| Crash recovery | Job queue restarts the job | Resumes from the last checkpoint | Job queue restarts the job | Resumes from the last checkpoint |
+| Review pause | No (review happens afterwards) | Optional `REVIEW_GATE`: person decides "maybe" sections in chat | No | Optional `REVIEW_GATE`: person types `decide ...`; the upload filter records it |
+| Extra containers | None | None (graph runs inside policy-api) | Hermes | Hermes |
+| Granite context needed | 32K or more | 32K or more | 64K or more (Hermes refuses less); 128K recommended | 64K or more; 128K recommended |
+
+In every version, code makes the impact decisions and builds the numbers and the Excel file. The
+chat model only passes the question in and the answer back. Required Granite server settings are in
+[docs/setup.md](docs/setup.md#granite-server-requirements).
 
 ## Try it in five minutes (no GPUs)
 
@@ -43,7 +111,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 |---|---|
 | Read everything as one PDF, with diagrams | [docs/pdf/handbook.pdf](docs/pdf/handbook.pdf) |
 | Understand how it works and why it's built this way | [docs/architecture.md](docs/architecture.md) |
-| Install it on the GPU server | [docs/setup.md](docs/setup.md) |
+| Install it (and what your Granite server needs) | [docs/setup.md](docs/setup.md) |
 | Choose which GPUs each model uses | `python3 scripts/setup_gpus.py` ([setup.md step 3](docs/setup.md)) |
 | Ask questions and read the results (staff) | [docs/how-to.md](docs/how-to.md) |
 | Add policies, groups or models (admins) | [docs/how-to.md](docs/how-to.md#for-admins) |
@@ -56,9 +124,11 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 
 | Path | What it is |
 |---|---|
-| `compose.yaml`, `.env.example` | The whole stack: models (vLLM, TEI), Postgres, policy-api, Open WebUI, proxy |
-| `policy_api/` | The analysis pipeline and HTTP API (Python, FastAPI) |
-| `openwebui/` | The Open WebUI tool and the system prompt for the chat model |
+| `compose.yaml`, `.env.example` | The whole stack: Granite gateway, optional local models (vLLM), TEI, Postgres, policy-api, Hermes, Open WebUI, proxy |
+| `policy_api/` | The check graph (LangGraph), job queue and HTTP API (Python, FastAPI) |
+| `openwebui/` | The upload filter (used here: files and review decisions), custom CSS, and the Open WebUI tool and system prompt (not used in this version) |
+| `hermes/` | Hermes settings (`config.yaml`), its rules (`SOUL.md`) and the `secretary` plugin with the policy tools |
+| `gateway/` | nginx config for `granite-gateway`, the only way out of the backend network |
 | `proxy/nginx.conf` | The only service users reach |
 | `db/init.sql` | Database schema, including the audit trail |
 | `scripts/` | Network-containment check and model hash check |

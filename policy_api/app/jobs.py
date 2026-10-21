@@ -19,7 +19,8 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from .diff import Change
-from .pipeline import RunError, Services, execute_run
+from .graph import execute_run
+from .pipeline import RunError, Services
 from .review import ReviewItem
 from .store import now
 
@@ -38,13 +39,22 @@ class Retry(Exception):
 async def handle_impact_run(svc: Services, job: dict, final_attempt: bool) -> None:
     run_id = job["payload"]["run_id"]
     run = await svc.store.get_run(run_id)
-    if not run or run["status"] in ("done", "failed"):
-        return  # already finished by an earlier attempt that couldn't record it
-    if job["attempts"] > 1:
-        await svc.store.reset_run(run_id)
+    if not run or run["status"] in ("done", "failed", "needs_review"):
+        return  # already finished (or paused for a person) by an earlier attempt that couldn't record it
+    # No reset on a retry: the graph carries on from its last saved step.
     await svc.store.update_run(run_id, status="running", progress=(
         "Starting…" if job["attempts"] == 1 else "Starting again after an interruption…"))
     await execute_run(svc, run_id, final_attempt=final_attempt)
+
+
+async def handle_review_run(svc: Services, job: dict, final_attempt: bool) -> None:
+    """Carry on with a check that paused for a person to decide its "maybe" sections."""
+    run_id = job["payload"]["run_id"]
+    run = await svc.store.get_run(run_id)
+    if not run or run["status"] not in ("queued", "running"):
+        return  # only a run this answer claimed (POST /runs/{id}/review set it to queued)
+    await svc.store.update_run(run_id, status="running", progress="Applying the decisions…")
+    await execute_run(svc, run_id, final_attempt=final_attempt, resume=job["payload"]["answer"])
 
 
 async def on_impact_run_dead(svc: Services, job: dict, error: str) -> None:
@@ -113,9 +123,10 @@ async def handle_review_sync(svc: Services, job: dict, final_attempt: bool) -> N
         log.info("saved %d reviewer decision(s)", saved)
 
 
-HANDLERS: dict[str, Handler] = {"impact_run": handle_impact_run, "cleanup_exports": handle_cleanup_exports,
-                                "review_sync": handle_review_sync}
-ON_DEAD: dict[str, Callable[[Services, dict, str], Awaitable[None]]] = {"impact_run": on_impact_run_dead}
+HANDLERS: dict[str, Handler] = {"impact_run": handle_impact_run, "review_run": handle_review_run,
+                                "cleanup_exports": handle_cleanup_exports, "review_sync": handle_review_sync}
+ON_DEAD: dict[str, Callable[[Services, dict, str], Awaitable[None]]] = {"impact_run": on_impact_run_dead,
+                                                                        "review_run": on_impact_run_dead}
 # kind -> seconds between runs. Added to by optional features (e.g. the review sync).
 PERIODIC: dict[str, float] = {"cleanup_exports": 6 * 3600}
 

@@ -1,15 +1,14 @@
-"""One impact analysis: diff the head policy, find candidate clauses, judge each pair, summarise."""
+"""The parts of one impact analysis: services, candidate search, judging one pair, and the summary.
+The order they run in, retries, checkpoints and the review pause are in graph.py."""
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import logging
 from dataclasses import dataclass
 from typing import Any
 
 from .config import Settings
-from .diff import Change, diff_clauses
-from .documents import split_clauses
+from .diff import Change
 from .llm import check_evidence
 from .prompts import JUDGE_SYSTEM, Pair, render_pair
 from .store import ClauseRow, now
@@ -39,11 +38,15 @@ class Services:
     escalate: Any = None
     extractor: Any = None
     review: Any = None  # app.review.ArgillaReview when the review queue is on
+    graph: Any = None  # the compiled run graph (graph.py), with its checkpointer
+    exit_stack: Any = None  # contextlib.AsyncExitStack holding the checkpointer's connection
 
     async def close(self) -> None:
         for part in (self.embedder, self.reranker, self.judge, self.escalate, self.extractor):
             if part is not None and hasattr(part, "aclose"):
                 await part.aclose()
+        if self.exit_stack is not None:
+            await self.exit_stack.aclose()
         await self.store.close()
 
 
@@ -78,35 +81,21 @@ async def find_candidates(svc: Services, change: Change, head_id: str, policy_id
     return cands
 
 
-async def _judge_all(svc: Services, run_id: str, head: dict, metas: dict, work: list, progress) -> tuple[list, int]:
-    sem = asyncio.Semaphore(svc.settings.judge_concurrency)
-    done, errors = 0, 0
-
-    async def one(change: Change, change_id: int, row: ClauseRow, found: set[str]):
-        nonlocal done, errors
-        pair = Pair(head["id"], head["title"], change, row, metas[row.policy_id]["title"], frozenset(found))
-        prompt = render_pair(pair)
-        prompt_hash = hashlib.sha256((JUDGE_SYSTEM + prompt).encode()).hexdigest()
-        escalated = False
-        async with sem:
-            try:
-                verdict = check_evidence(pair, await svc.judge.assess(pair))
-                await svc.store.save_judgement(run_id, change_id, row, sorted(found), "judge", svc.judge.name, prompt_hash, verdict, prompt)
-                if verdict["impacted"] == "unsure" and svc.escalate is not None:
-                    verdict = check_evidence(pair, await svc.escalate.assess(pair))
-                    escalated = True
-                    await svc.store.save_judgement(run_id, change_id, row, sorted(found), "escalate", svc.escalate.name, prompt_hash, verdict, prompt)
-            except Exception:
-                log.exception("judging %s against §%s failed", row.key, change.number)
-                errors += 1
-                verdict = dict(MODEL_ERROR)
-        done += 1
-        if done == len(work) or done % 10 == 0:
-            await progress(f"Checked {done} of {len(work)} section pairs…")
-        return change, row, found, verdict, escalated
-
-    results = await asyncio.gather(*(one(*w) for w in work))
-    return results, errors
+async def judge_pair(svc: Services, run_id: str, change: Change, change_id: int, row: ClauseRow, found: set[str],
+                     head: dict, metas: dict, stage: str = "judge") -> dict:
+    """One model's verdict on one (change, clause) pair, saved to the audit trail. A model failure becomes
+    an "unsure" verdict that a person must check; the caller counts it from `model_error`."""
+    model = svc.judge if stage == "judge" else svc.escalate
+    pair = Pair(head["id"], head["title"], change, row, metas[row.policy_id]["title"], frozenset(found))
+    prompt = render_pair(pair)
+    prompt_hash = hashlib.sha256((JUDGE_SYSTEM + prompt).encode()).hexdigest()
+    try:
+        verdict = check_evidence(pair, await model.assess(pair))
+    except Exception:
+        log.exception("%s of %s against §%s failed", stage, row.key, change.number)
+        return {**MODEL_ERROR, "model_error": True}
+    await svc.store.save_judgement(run_id, change_id, row, sorted(found), stage, model.name, prompt_hash, verdict, prompt)
+    return verdict
 
 
 def summarise(run: dict, head: dict, labels: tuple[str, str], changes: list[Change], verdicts: list,
@@ -169,71 +158,3 @@ def summarise(run: dict, head: dict, labels: tuple[str, str], changes: list[Chan
             "semantic_k": s.semantic_k, "rerank_keep": s.rerank_keep, "demo_mode": s.demo_mode,
         },
     }
-
-
-async def run_impact(svc: Services, run_id: str) -> dict:
-    store = svc.store
-    run = await store.get_run(run_id)
-    head_id, subset = run["head_policy"], run["subset"]
-
-    async def progress(text: str) -> None:
-        await store.update_run(run_id, progress=text)
-
-    head = (await store.get_policies([head_id])).get(head_id)
-    if not head:
-        raise RunError(f"There is no policy called {head_id}.")
-    versions = await store.latest_versions(head_id, 2)
-    if run.get("upload_id"):
-        upload = await store.get_upload(run["upload_id"])
-        if not upload:
-            raise RunError("The uploaded file could not be found. Please upload it again.")
-        if not versions:
-            raise RunError(f"No version of {head_id} is stored yet, so there is nothing to compare the upload with.")
-        old_body, new_body = versions[0][1], upload["body"]
-        labels = (f"stored version {versions[0][0]}", f"uploaded file {upload['filename']}")
-    else:
-        if len(versions) < 2:
-            raise RunError(f"Only one version of {head_id} is stored. Upload the new version to compare it.")
-        (new_v, new_body), (old_v, old_body) = versions
-        labels = (f"version {old_v}", f"version {new_v}")
-
-    policy_ids = [p for p in await store.subset_policy_ids(subset) if p != head_id]
-    if not policy_ids:
-        raise RunError(f"The group “{subset}” has no policies to check apart from {head_id}.")
-    metas = await store.get_policies(policy_ids)
-
-    # In a thread so a large upload can't stall other requests; diff_clauses caps its own time
-    changes = await asyncio.to_thread(lambda: diff_clauses(split_clauses(old_body), split_clauses(new_body)))
-    await progress(f"Found {len(changes)} changed section(s). Looking for related sections…")
-    work = []
-    for change in changes:
-        change_id = await store.save_change(run_id, change)
-        cands = await find_candidates(svc, change, head_id, policy_ids)
-        work += [(change, change_id, row, found) for row, found in cands.values()]
-
-    await progress(f"Checking {len(work)} section pairs…")
-    verdicts, errors = await _judge_all(svc, run_id, head, metas, work, progress) if work else ([], 0)
-    if work and errors == len(work):
-        raise RunError("The checking model is not responding. Please try again in a few minutes or contact the system owner.")
-    return summarise(run, head, labels, changes, verdicts, policy_ids, metas, svc, errors)
-
-
-async def execute_run(svc: Services, run_id: str, final_attempt: bool = True) -> None:
-    """Do the run and record the outcome on the run row.
-
-    A RunError is the user's problem (no such policy, nothing changed) and is recorded at once. Any other
-    error is raised for the job queue to retry, except on the final attempt, where it is recorded."""
-    try:
-        result = await run_impact(svc, run_id)
-        await svc.store.update_run(run_id, status="done", progress="Finished", result=result, finished_at=now())
-    except RunError as e:
-        await svc.store.update_run(run_id, status="failed", error=str(e), finished_at=now())
-    except Exception:
-        if not final_attempt:
-            await svc.store.update_run(run_id, progress="Hit a problem; trying again shortly…")
-            raise
-        log.exception("run %s failed", run_id)
-        await svc.store.update_run(
-            run_id, status="failed", finished_at=now(),
-            error="Something went wrong on our side. The error has been logged; please contact the system owner.",
-        )

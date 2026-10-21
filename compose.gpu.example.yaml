@@ -6,25 +6,19 @@
 #   2. Replace every "SET-ME-…" below with GPU numbers from `nvidia-smi -L`. Delete optional services you don't run.
 #   3. In .env set:
 #        COMPOSE_FILE=compose.yaml:compose.gpu.yaml
-#        JUDGE_TP=<number of GPUs given to judge>
 #        ESCALATE_TP=<number of GPUs given to escalate>
 #   4. `docker compose config --quiet` must print nothing.
 #
 # Rough sizing (check each model card for your exact hardware and precision):
-#   judge     gpt-oss-120b   about 80 GB in total: 1 x H100/H200/B200 80 GB+, or 2 x 48 GB (JUDGE_TP=2)
+#   Granite 4.2 30B is not listed: it runs on your own vLLM server, outside this stack.
 #   embed     embedding      a few GB; embed and rerank can share one GPU
 #   rerank    reranker       a few GB
 #   extract   gpt-oss-20b    optional, about 24 GB; one GPU of its own
 #   escalate  Inkling-Small  optional; GPU count per the vLLM Inkling recipe for your GPU family
-# Rules: vLLM services (judge, extract, escalate) never share a GPU with each other, and use
+# Rules: vLLM services (extract, escalate, judge-tuned, judge-candidate) never share a GPU with each other, and use
 # 1, 2, 4 or 8 GPUs each.
 
 services:
-  judge:
-    deploy:
-      resources:
-        reservations:
-          devices: [{driver: nvidia, device_ids: ["SET-ME"], capabilities: [gpu]}]
   embed:
     deploy:
       resources:
